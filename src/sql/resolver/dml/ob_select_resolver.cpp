@@ -15,6 +15,7 @@
  */
 
 #define USING_LOG_PREFIX SQL_RESV
+#include "sql/engine/basic/file_sql_native.h"
 #include "sql/resolver/dml/ob_select_resolver.h"
 #include "sql/resolver/dml/ob_del_upd_resolver.h"
 #include "share/ob_time_utility2.h"
@@ -3104,7 +3105,29 @@ int ObSelectResolver::resolve_into_clause(const ParseNode *node)
     } else {
       new(into_item) ObSelectIntoItem();
       into_item->into_type_ = node->type_;
-      if (T_INTO_OUTFILE == node->type_) { // into outfile
+      if (T_FILE_COPY == node->type_) {
+        try {
+          std::string root;
+          if (OB_SUCC(ret)) { ret = file_sql::policy(*session_info_, *allocator_, root); }
+          if (OB_SUCC(ret)) {
+            if (params_.query_ctx_ != nullptr) { params_.query_ctx_->has_file_sql_ = true; }
+            file_sql::Descriptor descriptor;
+            descriptor.options = file_sql::options(*node, true);
+            for (int64_t i = 0; i < select_stmt->get_select_item_size(); ++i) {
+              const auto &item = select_stmt->get_select_item(i);
+              file_sql::Column column;
+              column.name = file_sql::string(item.alias_name_.empty() ? item.expr_name_ : item.alias_name_);
+              column.source = column.name;
+              column.type = file_sql::Type::VARCHAR;
+              descriptor.schema.push_back(column);
+            }
+            const auto encoded = descriptor.encode();
+            ObString value;
+            OZ(ob_write_string(*allocator_, ObString(encoded.size(), encoded.data()), value));
+            into_item->outfile_name_.set_varchar(value);
+          }
+        } catch (const std::exception &error) { ret = file_sql::failure(error); }
+      } else if (T_INTO_OUTFILE == node->type_) { // into outfile
         if (is_in_set_query()) {
           ret = OB_INAPPROPRIATE_INTO;
         } else if (node->num_child_ == 3 && NULL != node->children_[1]

@@ -199,6 +199,11 @@ private:
   int init_csv_env();
   void set_csv_format_options();
 
+  void *file_copy_ = nullptr;
+  bool file_copy_done_ = false;
+  int open_file_copy();
+  int copy_file_row();
+  int consume_file_copy(bool batch, int64_t max_rows);
   int get_row_str(const int64_t buf_len, bool is_first_row, char *buf, int64_t &pos);
   int into_dumpfile(ObExternalFileWriter *data_writer);
   int into_outfile(ObExternalFileWriter *data_writer);

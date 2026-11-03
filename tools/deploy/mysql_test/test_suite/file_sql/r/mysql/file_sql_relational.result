@@ -1,0 +1,13 @@
+# cross-format inner and left joins
+id	name	c1
+3	Chen	3
+1	Alice	1
+# grouping, having and limit
+active	n	total
+1	2	188.75
+# COPY table preserves NULL, empty strings, quotes and embedded newlines
+id	length	val
+1	0	<EMPTY>
+2	NULL	NULL
+3	4	a;"b
+4	3	x<NL>y

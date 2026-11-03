@@ -15,6 +15,7 @@
  */
 
 #define USING_LOG_PREFIX SQL_RESV
+#include "sql/engine/basic/file_sql_native.h"
 #include "config_bridge.h"
 #include "ob_dml_resolver.h"
 #include "sql/resolver/dml/ob_view_table_resolver.h"
@@ -2705,6 +2706,10 @@ int ObDMLResolver::resolve_table(const ParseNode &parse_tree,
         OZ (resolve_json_table_item(*table_node, table_item));
         break;
       }
+      case T_FILE_TABLE_EXPRESSION: {
+        OZ(resolve_file_table_item(*table_node, table_item));
+        break;
+      }
       case T_UNNEST_EXPRESSION: {
         if (OB_ISNULL(session_info_)) {
           ret = OB_INVALID_ARGUMENT;
@@ -3493,6 +3498,63 @@ int ObDMLResolver::resolve_str_const(const ParseNode &parse_tree, ObString& path
     MEMCPY(buf, val.get_string().ptr(), val.get_string().length());
     path_str.assign_ptr(buf, val.get_string().length());
   }
+  return ret;
+}
+
+int ObDMLResolver::resolve_file_table_item(const ParseNode &parse_tree, TableItem *&tbl_item)
+{
+  int ret = OB_SUCCESS;
+  try {
+    std::string root;
+    if (OB_FAIL(file_sql::policy(*session_info_, *allocator_, root))) { return ret; }
+    if (params_.query_ctx_ != nullptr) { params_.query_ctx_->has_file_sql_ = true; }
+    const auto descriptor = file_sql::bind(file_sql::options(parse_tree, false), root);
+    const auto encoded = descriptor.encode();
+    ObString value;
+    ObString alias;
+    const auto name = parse_tree.children_[2] ? file_sql::node_text(parse_tree.children_[2]) : file_sql::node_text(parse_tree.children_[0]);
+    OZ(ob_write_string(*allocator_, ObString(name.size(), name.data()), alias));
+    OZ(create_unnest_table_item(tbl_item, alias));
+    ObConstRawExpr *expr = nullptr;
+    OZ(ob_write_string(*allocator_, ObString(encoded.size(), encoded.data()), value));
+    OZ(ObRawExprUtils::build_const_string_expr(*params_.expr_factory_, ObVarcharType, value, CS_TYPE_UTF8MB4_BIN, expr));
+    if (OB_SUCC(ret)) {
+      tbl_item->json_table_def_->table_type_ = MulModeTableType::OB_FILE_TABLE_TYPE;
+      OZ(tbl_item->json_table_def_->doc_exprs_.push_back(expr));
+    }
+    const auto schema = descriptor.output_schema();
+    for (std::size_t i = 0; OB_SUCC(ret) && i < schema.size(); ++i) {
+      const auto &column = schema[i];
+      auto *memory = allocator_->alloc(sizeof(ObDmlJtColDef));
+      if (OB_ISNULL(memory)) { ret = OB_ALLOCATE_MEMORY_FAILED; break; }
+      auto *def = new (memory) ObDmlJtColDef();
+      auto &info = def->col_base_info_;
+      OZ(ob_write_string(*allocator_, ObString(column.name.size(), column.name.data()), info.col_name_));
+      info.col_type_ = COL_TYPE_UNNEST;
+      info.parent_id_ = 0;
+      info.id_ = i + 1;
+      info.output_column_idx_ = -1;
+      common::ObDataType type;
+      switch (column.type) {
+        case file_sql::Type::BIGINT: type.set_obj_type(ObIntType); break;
+        case file_sql::Type::DOUBLE: type.set_obj_type(ObDoubleType); break;
+        case file_sql::Type::BOOLEAN: type.set_obj_type(ObTinyIntType); break;
+        case file_sql::Type::DATE: type.set_obj_type(ObDateType); break;
+        case file_sql::Type::DATETIME: type.set_obj_type(ObDateTimeType); type.set_scale(column.scale); break;
+        default:
+          type.set_obj_type(ObVarcharType);
+          type.set_collation_type(CS_TYPE_UTF8MB4_BIN);
+          type.set_collation_level(CS_LEVEL_IMPLICIT);
+          type.set_length(file_sql::MAX_RECORD);
+          break;
+      }
+      info.data_type_ = type;
+      ColumnItem *column_item = nullptr;
+      OZ(generate_json_table_output_column_item(tbl_item, type, info.col_name_, info.id_, column_item));
+      if (OB_SUCC(ret)) { column_item->col_idx_ = tbl_item->json_table_def_->all_cols_.count(); }
+      OZ(tbl_item->json_table_def_->all_cols_.push_back(&info));
+    }
+  } catch (const std::exception &error) { ret = file_sql::failure(error); }
   return ret;
 }
 
@@ -7457,7 +7519,8 @@ int ObDMLResolver::resolve_json_table_column_all_items(const TableItem &table_it
       if (OB_ISNULL(col_info)) {
         ret = OB_ERR_UNEXPECTED;
       } else if (col_info->col_type_ != NESTED_COL_TYPE) {
-        ColumnItem* col_item = stmt->get_column_item_by_id(table_item.table_id_, col_info->output_column_idx_);
+        ColumnItem* col_item = stmt->get_column_item_by_id(table_item.table_id_,
+            jt_def->table_type_ == OB_FILE_TABLE_TYPE ? col_info->id_ : col_info->output_column_idx_);
         CK (OB_NOT_NULL(col_item));
         if (OB_SUCC(ret) && OB_FAIL(col_items.push_back(*col_item))) {
         }

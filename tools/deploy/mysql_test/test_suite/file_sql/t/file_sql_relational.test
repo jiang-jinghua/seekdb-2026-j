@@ -1,0 +1,34 @@
+# owner: database-competition
+# description: File scans use native relational operators and COPY preserves CSV values.
+--source mysql_test/test_suite/file_sql/include/copy_file_sql_data.inc
+--disable_query_log
+let $FILE_SQL_DATA_DIR = $OBSERVER_DIR/data_for_mysqltest_file_sql;
+set enable_file_sql = ON;
+--echo # cross-format inner and left joins
+eval select a.id, b.name, p.c1
+ from read_csv('$FILE_SQL_DATA_DIR/basic.csv') a
+ left join read_ndjson('$FILE_SQL_DATA_DIR/basic.jsonl') b on a.id = b.id
+ join read_parquet('$FILE_SQL_DATA_DIR/simple.parquet') p on p.c1 = a.id
+ where a.score > 90 order by a.id desc;
+--echo # grouping, having and limit
+eval select active, count(*) as n, sum(score) as total
+ from read_csv('$FILE_SQL_DATA_DIR/basic.csv')
+ group by active having count(*) > 1 order by active limit 1;
+--echo # COPY table preserves NULL, empty strings, quotes and embedded newlines
+create table file_sql_copy_t(id bigint, val varchar(32));
+insert into file_sql_copy_t values (1, ''), (2, NULL), (3, 'a;"b'), (4, concat('x', char(10), 'y'));
+eval copy file_sql_copy_t to '$FILE_SQL_DATA_DIR/roundtrip.csv' (format csv, header, delimiter ';', nullstr 'NULL');
+eval select id, char_length(val) as length, case when val = '' then '<EMPTY>' else replace(val, char(10), '<NL>') end as val
+ from read_csv('$FILE_SQL_DATA_DIR/roundtrip.csv', delimiter = ';', nullstr = 'NULL') order by id;
+--disable_result_log
+--error 1210
+eval copy file_sql_copy_t to '$FILE_SQL_DATA_DIR/roundtrip.csv' (header);
+--enable_result_log
+drop table file_sql_copy_t;
+set enable_file_sql = OFF;
+--disable_result_log
+--error 1235
+eval select count(*) from read_parquet('$FILE_SQL_DATA_DIR/simple.parquet');
+--enable_result_log
+--enable_query_log
+--source mysql_test/test_suite/file_sql/include/remove_file_sql_data.inc

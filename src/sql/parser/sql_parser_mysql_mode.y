@@ -510,6 +510,7 @@ END_P SET_VAR DELIMITER
 %type <node> sys_view_cast_opt
 %type <node> column_list_with_boost with_param_column_ref
 %type <node> es_sql_opt
+%type <node> file_table_expr copy_stmt copy_options copy_option_list copy_option
 %type <node> hybrid_search_expr hybrid_search_param
 %type <node> vector_similarity_expr vector_similarity_metric
 %type <node> algorithm_opt lock_opt
@@ -555,7 +556,8 @@ opt_end_p:
 
 /* only preparable statement will set question mark size */
 stmt:
-    select_stmt             { $$ = $1; question_mark_issue($$, result); }
+    copy_stmt { $$ = $1; question_mark_issue($$, result); }
+  | select_stmt             { $$ = $1; question_mark_issue($$, result); }
   | insert_stmt             { $$ = $1; question_mark_issue($$, result); }
   | create_table_stmt       {
     $$ = $1;
@@ -10848,6 +10850,7 @@ tbl_name
 {
   $$ = $1;
 }
+| file_table_expr { $$ = $1; }
 ;
 
 tbl_name:
@@ -12265,7 +12268,14 @@ explain_or_desc relation_factor opt_desc_column_option
   malloc_non_terminal_node($$, result->malloc_pool_, T_SHOW_COLUMNS, 4, $$, $2, NULL, $3);
 }
 
-| explain_or_desc explainable_stmt { GEN_EXPLAN_STMT($1, $$, 0, 0, $2, NULL, NULL);}
+| explain_or_desc explainable_stmt {
+  ParseNode *from = $2->type_ == T_SELECT ? $2->children_[PARSE_SELECT_FROM] : NULL;
+  if ($1 != NULL && from != NULL && from->num_child_ == 1
+      && from->children_[0]->type_ == T_FILE_TABLE_EXPRESSION) {
+    $$ = $2;
+    from->children_[0]->value_ = 1;
+  } else { GEN_EXPLAN_STMT(NULL, $$, 0, 0, $2, NULL, NULL); }
+}
 | explain_or_desc PRETTY explainable_stmt { GEN_EXPLAN_STMT($1, $$, 0, T_PRETTY, $3, NULL, NULL);}
 | explain_or_desc PRETTY_COLOR explainable_stmt { GEN_EXPLAN_STMT($1, $$, 0, T_PRETTY_COLOR, $3, NULL, NULL);}
 
@@ -12306,8 +12316,8 @@ explain_or_desc relation_factor opt_desc_column_option
 
 explain_or_desc:
 EXPLAIN {$$ = NULL;}
-| DESCRIBE {$$ = NULL;}
-| DESC  {$$ = NULL;}
+| DESCRIBE { malloc_terminal_node($$, result->malloc_pool_, T_INT); $$->value_ = 1; }
+| DESC { malloc_terminal_node($$, result->malloc_pool_, T_INT); $$->value_ = 1; }
 ;
 
 explainable_stmt:
@@ -17426,6 +17436,52 @@ JSON '(' column_name ')' STORE AS '(' lob_storage_parameters ')'
   merge_nodes(params, result, T_ARGUMENT_LIST, $8);
   malloc_non_terminal_node($$, result->malloc_pool_, T_LOB_STORAGE_CLAUSE, 3, type_node, $3, params);
 }
+;
+
+
+file_table_expr:
+NAME_OB '(' expr_list ')'
+{ malloc_non_terminal_node($$, result->malloc_pool_, T_FILE_TABLE_EXPRESSION, 3, $1, $3, NULL); $$->is_tree_not_param_ = 1; }
+| NAME_OB '(' expr_list ')' relation_name
+{ malloc_non_terminal_node($$, result->malloc_pool_, T_FILE_TABLE_EXPRESSION, 3, $1, $3, $5); $$->is_tree_not_param_ = 1; }
+| NAME_OB '(' expr_list ')' AS relation_name
+{ malloc_non_terminal_node($$, result->malloc_pool_, T_FILE_TABLE_EXPRESSION, 3, $1, $3, $6); $$->is_tree_not_param_ = 1; }
+;
+copy_stmt:
+COPY '(' select_stmt ')' TO STRING_VALUE copy_options
+{
+  ParseNode *target = NULL;
+  malloc_non_terminal_node(target, result->malloc_pool_, T_FILE_COPY, 2, $6, $7);
+  $$ = $3;
+  target->is_tree_not_param_ = 1;
+  $$->children_[PARSE_SELECT_INTO] = target;
+}
+| COPY relation_factor TO STRING_VALUE copy_options
+{
+  ParseNode *star = NULL, *project = NULL, *table = NULL, *target = NULL;
+  malloc_select_node($$, result->malloc_pool_);
+  malloc_terminal_node(star, result->malloc_pool_, T_STAR);
+  malloc_non_terminal_node(project, result->malloc_pool_, T_PROJECT_STRING, 1, star);
+  malloc_non_terminal_node($$->children_[PARSE_SELECT_SELECT], result->malloc_pool_, T_PROJECT_LIST, 1, project);
+  malloc_non_terminal_node(table, result->malloc_pool_, T_ORG, 4, $2, NULL, NULL, NULL);
+  malloc_non_terminal_node($$->children_[PARSE_SELECT_FROM], result->malloc_pool_, T_FROM_LIST, 1, table);
+  malloc_non_terminal_node(target, result->malloc_pool_, T_FILE_COPY, 2, $4, $5);
+  target->is_tree_not_param_ = 1;
+  $$->children_[PARSE_SELECT_INTO] = target;
+}
+;
+copy_options:
+/* empty */ { $$ = NULL; }
+| '(' copy_option_list ')' { merge_nodes($$, result, T_EXPR_LIST, $2); }
+;
+copy_option_list:
+copy_option { $$ = $1; }
+| copy_option_list ',' copy_option { malloc_non_terminal_node($$, result->malloc_pool_, T_LINK_NODE, 2, $1, $3); }
+;
+copy_option:
+relation_name literal { malloc_non_terminal_node($$, result->malloc_pool_, T_OP_EQ, 2, $1, $2); }
+| relation_name relation_name { malloc_non_terminal_node($$, result->malloc_pool_, T_OP_EQ, 2, $1, $2); }
+| relation_name { malloc_non_terminal_node($$, result->malloc_pool_, T_OP_EQ, 2, $1, NULL); }
 ;
 
 unnest_expr:

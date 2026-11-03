@@ -219,6 +219,9 @@ public:
                K_(col_count));
 
 private:
+  int open_file_scan();
+  int next_file_row();
+  void *file_scan_ = nullptr;
   int init();
   int reset_variable();  // reset var in rescan 
   int init_data_obj(); // allocate data_ array

@@ -15,6 +15,7 @@
  */
 
 #define USING_LOG_PREFIX SQL_ENG
+#include "sql/engine/basic/file_sql_native.h"
 #include "ob_json_table_op.h"
 #include "sql/engine/expr/ob_expr_multi_mode_func_helper.h"
 #include "sql/engine/expr/ob_expr_json_value.h"
@@ -326,7 +327,7 @@ OB_DEF_SERIALIZE(ObJsonTableSpec)
     OB_UNIS_ENCODE(info);
   }
   if (OB_FAIL(ret)) {
-  } else if (table_type_ == MulModeTableType::OB_UNNEST_TABLE_TYPE) {
+  } else if ((table_type_ == MulModeTableType::OB_UNNEST_TABLE_TYPE || table_type_ == MulModeTableType::OB_FILE_TABLE_TYPE)) {
     OB_UNIS_ENCODE(table_type_);
     int32_t value_exprs_count = value_exprs_.count() - 1;
     OB_UNIS_ENCODE(value_exprs_count);
@@ -354,7 +355,7 @@ OB_DEF_SERIALIZE_SIZE(ObJsonTableSpec)
     const ObJtColInfo& info = *cols_def_.at(i);
     OB_UNIS_ADD_LEN(info);
   }
-  if (table_type_ == MulModeTableType::OB_UNNEST_TABLE_TYPE) {
+  if ((table_type_ == MulModeTableType::OB_UNNEST_TABLE_TYPE || table_type_ == MulModeTableType::OB_FILE_TABLE_TYPE)) {
     OB_UNIS_ADD_LEN(table_type_);
     int32_t value_exprs_count = value_exprs_.count() - 1;
     OB_UNIS_ADD_LEN(value_exprs_count);
@@ -581,8 +582,93 @@ int ObJsonTableOp::generate_column_trees(JtColTreeNode*& root)
   return ret;
 }
 
+int ObJsonTableOp::open_file_scan()
+{
+  int ret = OB_SUCCESS;
+  try {
+    std::string root;
+    ObDatum *datum = nullptr;
+    if (OB_FAIL(file_sql::policy(*ctx_.get_my_session(), ctx_.get_allocator(), root))) {}
+    else if (MY_SPEC.value_exprs_.count() != 1) { ret = OB_ERR_UNEXPECTED; }
+    else if (OB_FAIL(MY_SPEC.value_exprs_.at(0)->eval(eval_ctx_, datum))) {}
+    else {
+      const auto descriptor = file_sql::Descriptor::decode(file_sql::string(datum->get_string()));
+      std::vector<std::size_t> projected;
+      for (int64_t i = 1; i < MY_SPEC.cols_def_.count(); ++i) {
+        if (MY_SPEC.cols_def_.at(i)->output_column_idx_ >= 0) { projected.push_back(i - 1); }
+      }
+      file_scan_ = new file_sql::Cursor(descriptor, root, projected);
+    }
+  } catch (const std::exception &error) { ret = file_sql::failure(error); }
+  return ret;
+}
+
+int ObJsonTableOp::next_file_row()
+{
+  int ret = OB_SUCCESS;
+  clear_evaluated_flag();
+  jt_ctx_.row_alloc_.reuse();
+  try {
+    auto *cursor = static_cast<file_sql::Cursor *>(file_scan_);
+    file_sql::Row row;
+    if (OB_ISNULL(cursor)) { ret = OB_ERR_UNEXPECTED; }
+    else if (!cursor->next(row)) { ret = OB_ITER_END; }
+    else {
+      const auto schema = cursor->descriptor().output_schema();
+      for (int64_t i = 1; OB_SUCC(ret) && i < MY_SPEC.cols_def_.count(); ++i) {
+        const int64_t output = MY_SPEC.cols_def_.at(i)->output_column_idx_;
+        if (output < 0) { continue; }
+        file_sql::require(std::size_t(i) <= row.size(), "file row width mismatch");
+        const auto &cell = row[i - 1];
+        auto *expr = MY_SPEC.column_exprs_.at(output);
+        auto &datum = expr->locate_datum_for_write(eval_ctx_);
+        datum.set_null();
+        int64_t number = 0; double floating = 0;
+        if (!cell.null()) {
+          switch (schema[i - 1].type) {
+            case file_sql::Type::BIGINT:
+            case file_sql::Type::BOOLEAN:
+              if (file_sql::lower(cell.text) == "true") { number = 1; }
+              else if (file_sql::lower(cell.text) == "false") { number = 0; }
+              else { file_sql::require(file_sql::integer(cell.text, number), "invalid integer"); }
+              datum.set_int(number); break;
+            case file_sql::Type::DOUBLE:
+              file_sql::require(file_sql::real(cell.text, floating), "invalid floating point value"); datum.set_double(floating); break;
+            case file_sql::Type::DATE:
+            case file_sql::Type::DATETIME: {
+              int64_t days = 0, micros = 0;
+              if (cursor->descriptor().options.format == "parquet") { file_sql::require(file_sql::integer(cell.text, number), "invalid Parquet date"); }
+              else {
+                file_sql::require(file_sql::calendar(cell.text, days, micros), "invalid date");
+                number = schema[i - 1].type == file_sql::Type::DATE ? days : micros;
+              }
+              if (schema[i - 1].type == file_sql::Type::DATE) {
+                file_sql::require(number >= -719162 && number <= 2932896, "date out of SQL range");
+                datum.set_date(number);
+              } else {
+                file_sql::require(number >= -62135596800000000LL && number <= 253402300799999999LL, "datetime out of SQL range");
+                datum.set_datetime(number);
+              }
+              break;
+            }
+            default: {
+              char *memory = static_cast<char *>(jt_ctx_.row_alloc_.alloc(std::max<std::size_t>(1, cell.text.size())));
+              if (OB_ISNULL(memory)) { ret = OB_ALLOCATE_MEMORY_FAILED; }
+              else { MEMCPY(memory, cell.text.data(), cell.text.size()); datum.set_string(memory, cell.text.size()); }
+              break;
+            }
+          }
+        }
+        expr->get_eval_info(eval_ctx_).evaluated_ = true;
+      }
+    }
+  } catch (const std::exception &error) { ret = file_sql::failure(error); }
+  return ret;
+}
+
 int ObJsonTableOp::inner_open()
 {
+  if (MY_SPEC.table_type_ == MulModeTableType::OB_FILE_TABLE_TYPE) { return open_file_scan(); }
   INIT_SUCC(ret);
   if (OB_FAIL(init())) {
   } else if (MY_SPEC.value_exprs_.empty()) {
@@ -597,6 +683,10 @@ int ObJsonTableOp::inner_open()
 
 int ObJsonTableOp::inner_rescan()
 {
+  if (MY_SPEC.table_type_ == MulModeTableType::OB_FILE_TABLE_TYPE) {
+    delete static_cast<file_sql::Cursor *>(file_scan_); file_scan_ = nullptr;
+    return open_file_scan();
+  }
   int ret = OB_SUCCESS;
   if (OB_FAIL(ObOperator::inner_rescan())) {
   } else {
@@ -684,6 +774,7 @@ int ObJsonTableOp::init()
 
 int ObJsonTableOp::inner_close()
 {
+  delete static_cast<file_sql::Cursor *>(file_scan_); file_scan_ = nullptr;
   INIT_SUCC(ret);
   if (OB_NOT_NULL(root_)) {
     if (OB_FAIL(root_->reset(&jt_ctx_))) {
@@ -722,6 +813,7 @@ void ScanNode::reset_reg_columns(JtScanCtx* ctx)
 
 void ObJsonTableOp::destroy()
 {
+  delete static_cast<file_sql::Cursor *>(file_scan_); file_scan_ = nullptr;
   ObOperator::destroy();
 }
 
@@ -1400,6 +1492,7 @@ int UnionNode::get_next_row(void* in, JtScanCtx* ctx, bool& is_null_value)
 // json/xml table function inner
 int ObJsonTableOp::inner_get_next_row()
 {
+  if (MY_SPEC.table_type_ == MulModeTableType::OB_FILE_TABLE_TYPE) { return next_file_row(); }
   INIT_SUCC(ret);
   bool is_root_null = false;
   if (!(jt_ctx_.is_json_table_func()

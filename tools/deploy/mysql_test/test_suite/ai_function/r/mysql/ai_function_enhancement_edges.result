@@ -1,0 +1,16 @@
+# JSON template arguments preserve their types
+kind
+ARRAY
+kind
+OBJECT
+# Nested prompts preserve the inner template
+template
+inner {0}
+# Long text and Unicode parameters are not truncated
+arg_length
+70000
+unicode_arg
+你好
+# NULL embedding input propagates without resolving a model
+null_ok
+1

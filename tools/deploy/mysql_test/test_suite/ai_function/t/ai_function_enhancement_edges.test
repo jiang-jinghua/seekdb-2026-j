@@ -1,0 +1,21 @@
+#owner: oceanbase
+#owner group: shenzhen
+connection default;
+--disable_query_log
+--echo # JSON template arguments preserve their types
+select json_type(json_extract(ai_prompt('{0}', json_array(1,true)), '$.args[0]')) as kind;
+select json_type(json_extract(ai_prompt('{0}', json_object('k',2)), '$.args[0]')) as kind;
+--echo # Nested prompts preserve the inner template
+select json_unquote(json_extract(ai_prompt('{0}', ai_prompt('inner {0}', 'world')), '$.args[0].template')) as template;
+--echo # Long text and Unicode parameters are not truncated
+--disable_warnings
+drop table if exists ai_prompt_edge_lob;
+--enable_warnings
+create table ai_prompt_edge_lob(t longtext, a longtext);
+insert into ai_prompt_edge_lob values ('{0}/{0}', repeat('x', 70000));
+select char_length(json_unquote(json_extract(ai_prompt(t,a), '$.args[0]'))) as arg_length from ai_prompt_edge_lob;
+drop table ai_prompt_edge_lob;
+select json_unquote(json_extract(ai_prompt('{0}', '你好'), '$.args[0]')) as unicode_arg;
+--echo # NULL embedding input propagates without resolving a model
+select ai_embed('unused-null-model', null) is null as null_ok;
+--enable_query_log

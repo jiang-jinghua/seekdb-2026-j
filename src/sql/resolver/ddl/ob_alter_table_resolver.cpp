@@ -15,6 +15,7 @@
  */
 
 #define USING_LOG_PREFIX SQL_RESV
+#include "sql/resolver/ddl/ai_column_ddl.h"
 #include "config_bridge.h"
 #include "sql/resolver/ddl/ob_alter_table_resolver.h"
 #include "sql/resolver/expr/ob_raw_expr_part_expr_checker.h"
@@ -3453,9 +3454,40 @@ int ObAlterTableResolver::resolve_add_column(const ParseNode &node, ObColumnName
           }
         }
 
+        if (OB_SUCC(ret) && node.children_[i]->num_child_ == 6) {
+          try {
+            const auto definition=ai_column::resolve(*node.children_[i],alter_column_schema);
+            for(const auto &dependency:definition.dependencies){
+              const auto *source=table_schema_->get_column_schema(ObString(dependency.size(),dependency.data()));
+              if(!source||source->is_hidden()||ai_column::is_ai(*source)){
+                ret=OB_NOT_SUPPORTED;LOG_USER_ERROR(OB_NOT_SUPPORTED,"AI dependencies must reference ordinary columns");break;
+              }
+            }
+            if(OB_SUCC(ret)){
+              const auto id=table_schema_->get_max_used_column_id()+alter_table_stmt->get_alter_table_schema().get_column_count()+1;
+              alter_column_schema.set_column_id(id);
+            }
+          }catch(const std::exception &error){ret=OB_NOT_SUPPORTED;LOG_USER_ERROR(OB_NOT_SUPPORTED,error.what());}
+        }
         //add column
         if (OB_SUCC(ret)) {
           if (OB_FAIL(alter_table_stmt->add_column(alter_column_schema))) {
+          } else if (node.children_[i]->num_child_ == 6) {
+            try {
+              ObTableSchema temporary;
+              if(OB_FAIL(temporary.assign(*table_schema_))){}
+              else {
+                temporary.set_max_used_column_id(alter_column_schema.get_column_id());
+                const auto definition=ai_column::resolve(*node.children_[i],alter_column_schema);
+                const auto count=temporary.get_column_count();
+                if(OB_FAIL(ai_column::add_hidden_columns(temporary,alter_column_schema.get_column_id(),definition))){}
+                for(int64_t j=count;OB_SUCC(ret)&&j<temporary.get_column_count();++j){
+                  AlterColumnSchema hidden;
+                  if(OB_FAIL(hidden.assign(*temporary.get_column_schema_by_idx(j)))){}
+                  else{hidden.alter_type_=OB_DDL_ADD_COLUMN;ret=alter_table_stmt->add_column(hidden);}
+                }
+              }
+            }catch(const std::exception &error){ret=OB_INVALID_ARGUMENT;LOG_USER_ERROR(OB_INVALID_ARGUMENT,error.what());}
           } else if (FALSE_IT(alter_table_stmt->set_sql_mode(session_info_->get_sql_mode()))) {
           }
         }
@@ -4105,6 +4137,50 @@ int ObAlterTableResolver::resolve_modify_column(const ParseNode &node,
             LOG_USER_ERROR(OB_NOT_SUPPORTED, "Modify geometry srid");
           }
         }
+      }
+
+      if (OB_SUCC(ret) && node.children_[i]->num_child_ == 6) {
+        try {
+          auto definition=ai_column::resolve(*node.children_[i],alter_column_schema);
+          for(const auto &dependency:definition.dependencies){
+            const auto *source=table_schema_->get_column_schema(ObString(dependency.size(),dependency.data()));
+            if(!source||source->is_hidden()||ai_column::is_ai(*source)){
+              ret=OB_NOT_SUPPORTED;break;
+            }
+          }
+          if(OB_SUCC(ret)&&ai_column::is_ai(*origin_col_schema)){
+            const auto old=ai_column::definitions(*table_schema_);
+            const auto found=std::find_if(old.begin(),old.end(),[&](const auto &entry){return entry.first==origin_col_schema->get_column_id();});
+            ai_column::Definition::check(found!=old.end(),"missing AI definition");
+            definition.definition_version=found->second.definition_version+1;
+            const auto name=ai_column::hidden_name(origin_col_schema->get_column_id(),"spec");
+            const auto *original=table_schema_->get_column_schema(ObString(name.size(),name.data()));
+            ai_column::Definition::check(original!=nullptr,"missing AI specification column");
+            AlterColumnSchema spec;
+            if(OB_FAIL(spec.assign(*original))){}
+            else {
+              const auto encoded=definition.encode();ObObj value;
+              value.set_varchar(ObString(encoded.size(),encoded.data()));
+              value.set_collation_type(CS_TYPE_UTF8MB4_BIN);
+              spec.alter_type_=OB_DDL_ALTER_COLUMN;spec.is_set_default_=true;
+              if(OB_FAIL(spec.set_origin_column_name(original->get_column_name_str()))){}
+              else if(OB_FAIL(spec.set_cur_default_value(value,false))){}
+              else{ret=alter_table_stmt->add_column(spec);}
+            }
+          }else if(OB_SUCC(ret)){
+            ObTableSchema temporary;
+            if(OB_FAIL(temporary.assign(*table_schema_))){}
+            else{
+              const auto count=temporary.get_column_count();
+              if(OB_FAIL(ai_column::add_hidden_columns(temporary,origin_col_schema->get_column_id(),definition))){}
+              for(int64_t j=count;OB_SUCC(ret)&&j<temporary.get_column_count();++j){
+                AlterColumnSchema hidden;
+                if(OB_FAIL(hidden.assign(*temporary.get_column_schema_by_idx(j)))){}
+                else{hidden.alter_type_=OB_DDL_ADD_COLUMN;ret=alter_table_stmt->add_column(hidden);}
+              }
+            }
+          }
+        }catch(const std::exception &error){ret=OB_NOT_SUPPORTED;LOG_USER_ERROR(OB_NOT_SUPPORTED,error.what());}
       }
 
       // resolve index (unique key only) of column

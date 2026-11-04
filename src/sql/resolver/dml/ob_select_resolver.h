@@ -114,6 +114,7 @@ protected:
   virtual int check_special_join_table(const TableItem &join_table, bool is_left_child, ObItemType join_type) override;
   int add_parent_cte_table_item(TableItem *table_item);
   int resolve_from_clause(const ParseNode *node);
+  int resolve_show_ai_columns(const ParseNode &parse_tree);
   int resolve_field_list(const ParseNode &node);
   int prepare_get_child_at(const ParseNode* node, const int32_t idx);
   int resolve_star(const ParseNode *node);

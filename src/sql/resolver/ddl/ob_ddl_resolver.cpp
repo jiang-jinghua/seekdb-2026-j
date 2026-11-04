@@ -15,6 +15,7 @@
  */
 
 #define USING_LOG_PREFIX SQL_RESV
+#include "sql/resolver/ddl/ai_column_ddl.h"
 #include "config_bridge.h"
 #include "ob_ddl_resolver.h"
 #include "data_plane/blocksstable/ob_index_block_util.h"
@@ -1964,6 +1965,26 @@ int ObDDLResolver::resolve_column_definition(ObColumnSchemaV2 &column,
           }
         }
       }
+    }
+  }
+  if (OB_SUCC(ret) && node->num_child_ == 6) {
+    try {
+      const auto definition = ai_column::resolve(*node, column);
+      if (definition.function == "ai_embed" && definition.arguments.size() == 3
+          && share::ai_column::Definition::number(definition.arguments[2]) != definition.dimension) {
+        ret = OB_ERR_INVALID_VECTOR_DIM;
+        LOG_USER_ERROR(OB_ERR_INVALID_VECTOR_DIM, static_cast<unsigned>(definition.dimension),
+            static_cast<unsigned>(share::ai_column::Definition::number(definition.arguments[2])));
+      } else if (!column.is_nullable() || resolve_stat.is_set_default_value_
+          || resolve_stat.is_primary_key_ || column.is_autoincrement()) {
+        ret = OB_NOT_SUPPORTED;
+        LOG_USER_ERROR(OB_NOT_SUPPORTED, "AI columns must be nullable and cannot have defaults, primary keys or autoincrement");
+      } else {
+        column.add_column_flag(AI_COLUMN_FLAG);
+      }
+    } catch (const std::exception &error) {
+      ret = OB_NOT_SUPPORTED;
+      LOG_USER_ERROR(OB_NOT_SUPPORTED, error.what());
     }
   }
   return ret;

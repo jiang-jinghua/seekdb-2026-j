@@ -15,6 +15,7 @@
  */
 
 #define USING_LOG_PREFIX SQL_ENG
+#include "sql/engine/ai_column/ai_column_service.h"
 #include "config_bridge.h"
 #include "common/ob_timeout_ctx.h"
 #include "lib/stat/ob_diagnostic_info_guard.h"
@@ -507,6 +508,9 @@ int ObCreateTableExecutor::execute(ObExecContext &ctx, ObCreateTableStmt &stmt)
           ctx.get_query_runtime_environment());
     }
   }
+  if (OB_SUCC(ret) && res.table_id_ != OB_INVALID_ID && !ai_column::internal_execution()) {
+    ret = ai_column::register_table(ctx, table_schema, stmt.get_database_name(), res.table_id_);
+  }
   return ret;
 }
 
@@ -878,6 +882,19 @@ int ObAlterTableExecutor::execute(ObExecContext &ctx, ObAlterTableStmt &stmt)
       "table_info", table_info_buffer,
       "schema_version", res.schema_version_);
     SQL_ENG_LOG(INFO, "finish alter table execute.", K(ret), "ddl_event_info", ObDDLEventInfo(GCTX.self_addr()), K(first_stmt));
+  }
+  if(OB_SUCC(ret)&&!ai_column::internal_execution()){
+    bool has_ai=false;
+    for(int64_t i=0;i<alter_table_arg.alter_table_schema_.get_column_count();++i){
+      has_ai|=(alter_table_arg.alter_table_schema_.get_column_schema_by_idx(i)->get_column_flags()&AI_COLUMN_FLAG)!=0;
+    }
+    if(has_ai){
+      ObSchemaGetterGuard guard;const ObTableSchema *schema=nullptr;
+      if(OB_FAIL(refresh_schema_for_table())){}
+      else if(OB_FAIL(GCTX.schema_service_->get_runtime_schema_guard(guard))){}
+      else if(OB_FAIL(guard.get_table_schema(alter_table_arg.alter_table_schema_.get_table_id(),schema))){}
+      else if(schema){ret=ai_column::register_table(ctx,*schema,stmt.get_database_name(),schema->get_table_id());}
+    }
   }
   return ret;
 }

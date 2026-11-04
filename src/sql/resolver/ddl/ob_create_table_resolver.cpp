@@ -15,6 +15,7 @@
  */
 
 #define USING_LOG_PREFIX SQL_RESV
+#include "sql/resolver/ddl/ai_column_ddl.h"
 #include "sql/resolver/ddl/ob_create_table_resolver.h"
 #include "sql/resolver/dml/ob_select_resolver.h"
 #include "sql/resolver/ddl/ob_fts_index_builder_util.h"
@@ -397,6 +398,36 @@ int ObCreateTableResolver::resolve(const ParseNode &parse_tree)
       }
     }
 
+  }
+  if (OB_SUCC(ret) && stmt_ != nullptr && create_table_node->children_[3] != nullptr) {
+    try {
+      auto &schema = static_cast<ObCreateTableStmt *>(stmt_)->get_create_table_arg().schema_;
+      const auto *elements = create_table_node->children_[3];
+      std::vector<std::pair<uint64_t, ai_column::Definition>> definitions;
+      for (int64_t i = 0; OB_SUCC(ret) && i < elements->num_child_; ++i) {
+        const auto *element = elements->children_[i];
+        if (element && element->type_ == T_COLUMN_DEFINITION && element->num_child_ == 6) {
+          const auto name = ai_column::node_text(element->children_[0]);
+          const auto *column = schema.get_column_schema(ObString(name.size(), name.data()));
+          ai_column::Definition::check(column != nullptr, "missing AI result column");
+          const auto definition = ai_column::resolve(*element, *column);
+          for (const auto &dependency : definition.dependencies) {
+            const auto *source = schema.get_column_schema(ObString(dependency.size(), dependency.data()));
+            if (source == nullptr || ai_column::is_ai(*source) || source->is_hidden()) {
+              ret = OB_NOT_SUPPORTED;
+              break;
+            }
+          }
+          definitions.emplace_back(column->get_column_id(), definition);
+        }
+      }
+      for (const auto &definition : definitions) {
+        if (OB_SUCC(ret)) { ret = ai_column::add_hidden_columns(schema, definition.first, definition.second); }
+      }
+    } catch (const std::exception &error) {
+      ret = OB_INVALID_ARGUMENT;
+      LOG_USER_ERROR(OB_INVALID_ARGUMENT, error.what());
+    }
   }
   return ret;
 }

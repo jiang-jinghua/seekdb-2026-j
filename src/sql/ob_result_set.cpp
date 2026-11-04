@@ -15,6 +15,7 @@
  */
 
 #define USING_LOG_PREFIX SQL
+#include "sql/engine/ai_column/ai_column_service.h"
 #include "ob_result_set.h"
 #include "data_plane/transaction/ob_tx_desc_access.h"
 #include "share/rc/ob_server_runtime.h"
@@ -462,6 +463,7 @@ OB_INLINE int ObResultSet::do_open_plan(ObExecContext &ctx)
 
   if (OB_FAIL(ret)) {
   } else if (OB_FAIL(start_stmt())) {
+  } else if (OB_FAIL(ai_column::before_execute(ctx))) {
   } else {
     /* Set exec_result_ to the executor's runtime environment for returning data */
     /* execute plan,
@@ -722,6 +724,12 @@ OB_INLINE int ObResultSet::do_close_plan(int errcode, ObExecContext &ctx)
       LOG_ERROR("plan is not NULL, but plan ctx is NULL", K(ret), K(errcode));
     } else {
       err_ignored = plan_ctx->is_error_ignored();
+    }
+    if (OB_SUCC(ret) && (errcode == OB_SUCCESS || errcode == OB_ITER_END)
+        && (get_stmt_type() == stmt::T_INSERT || get_stmt_type() == stmt::T_UPDATE
+            || get_stmt_type() == stmt::T_DELETE || get_stmt_type() == stmt::T_REPLACE)
+        && ctx.get_stmt_factory() != nullptr && ctx.get_stmt_factory()->get_query_ctx() != nullptr) {
+      ret = ai_column::after_dml(ctx,ctx.get_stmt_factory()->get_query_ctx()->ai_column_tables_);
     }
     bool rollback = need_rollback(ret, errcode, err_ignored);
     get_exec_context().set_errcode(errcode);

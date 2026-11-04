@@ -15,6 +15,7 @@
  */
 
 #define USING_LOG_PREFIX SQL_RESV
+#include "sql/resolver/ddl/ai_column_ddl.h"
 #include "sql/engine/basic/file_sql_native.h"
 #include "sql/resolver/dml/ob_select_resolver.h"
 #include "sql/resolver/dml/ob_del_upd_resolver.h"
@@ -998,8 +999,28 @@ int ObSelectResolver::resolve_normal_query(const ParseNode &parse_tree)
   return ret;
 }
 
+int ObSelectResolver::resolve_show_ai_columns(const ParseNode &node)
+{
+  int ret=OB_SUCCESS;
+  try{
+    const auto *relation=node.children_[0];
+    const auto database=relation->children_[0]?ai_column::node_text(relation->children_[0]):ai_column::text(session_info_->get_database_name());
+    const auto table=ai_column::node_text(relation->children_[1]);
+    const ObTableSchema *schema=nullptr;
+    if(OB_FAIL(schema_checker_->get_table_schema(ObString(database.size(),database.data()),ObString(table.size(),table.data()),false,schema))){return ret;}
+    if(!schema){return OB_TABLE_NOT_EXIST;}
+    const auto sql="SELECT column_name,normalized_expr,max_retries,definition_version FROM oceanbase.__all_ai_column WHERE table_id="+std::to_string(schema->get_table_id())+" ORDER BY column_id";
+    ObString stored;OZ(ob_write_string(*allocator_,ObString(sql.size(),sql.data()),stored));
+    ObParser parser(*allocator_,session_info_->get_sql_mode());ParseResult result;
+    if(OB_SUCC(ret)){ret=parser.parse(stored,result);}
+    if(OB_SUCC(ret)){ret=resolve(*result.result_tree_->children_[0]);}
+  }catch(const std::exception &error){ret=OB_INVALID_ARGUMENT;LOG_USER_ERROR(OB_INVALID_ARGUMENT,error.what());}
+  return ret;
+}
+
 int ObSelectResolver::resolve(const ParseNode &parse_tree)
 {
+  if(parse_tree.num_child_==1){return resolve_show_ai_columns(parse_tree);}
   int ret = OB_SUCCESS;
   ObSelectStmt *select_stmt = NULL;
   bool is_stack_overflow = false;

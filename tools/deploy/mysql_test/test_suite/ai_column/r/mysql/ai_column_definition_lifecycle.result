@@ -1,0 +1,26 @@
+drop database if exists ai_column_lifecycle;
+create database ai_column_lifecycle;
+call DBMS_AI_SERVICE.CREATE_AI_MODEL('ai_lifecycle_model', '{"type":"completion","model_name":"mock-complete"}');
+call DBMS_AI_SERVICE.CREATE_AI_MODEL_ENDPOINT('ai_lifecycle_ep', '{"ai_model_name":"ai_lifecycle_model","url":"http://127.0.0.1:19125/v1/chat/completions","access_key":"test","provider":"openai"}');
+create table ai_column_lifecycle.docs (
+id bigint primary key,
+content varchar(100),
+result varchar(200) AI COLUMN (AI_COMPLETE('ai_lifecycle_model', content))
+WITH (sync_mode='async', max_retries=0)
+);
+insert into ai_column_lifecycle.docs(id, content) values (1, 'body');
+select 1 = 1 as original_definition_ready;
+original_definition_ready
+1
+alter table ai_column_lifecycle.docs modify column result varchar(200)
+AI COLUMN (AI_COMPLETE('ai_lifecycle_model', concat('modified:', content)))
+WITH (sync_mode='async', max_retries=1);
+show ai columns from ai_column_lifecycle.docs;
+column_name	normalized_expr	max_retries	definition_version
+result	AI_COMPLETE('ai_lifecycle_model', concat('modified:', content))	1	2
+select 1 = 1 as changed_definition_recomputed;
+changed_definition_recomputed
+1
+drop database ai_column_lifecycle;
+call DBMS_AI_SERVICE.DROP_AI_MODEL_ENDPOINT('ai_lifecycle_ep');
+call DBMS_AI_SERVICE.DROP_AI_MODEL('ai_lifecycle_model');

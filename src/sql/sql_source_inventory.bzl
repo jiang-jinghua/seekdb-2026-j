@@ -299,6 +299,7 @@ SQL_UNITY_GROUPS = [
         name = "ob_sql_engine_cmd_1",
         language = "c++",
         srcs = [
+            "src/sql/engine/ai_column/ai_column_service.cpp",
             "src/sql/engine/cmd/ob_table_executor.cpp",
             "src/sql/engine/cmd/ob_tcl_executor.cpp",
             "src/sql/engine/cmd/ob_trigger_executor.cpp",

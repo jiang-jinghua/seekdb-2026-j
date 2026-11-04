@@ -212,6 +212,7 @@ SHARE_PUBLIC_HEADER_ROOTS = [
     "schema/ob_schema_publish_signal.h",
     "schema/ob_schema_runtime_service.h",
     "schema/ob_schema_service.h",
+    "schema/ai_column_definition.h",
     "schema/ob_schema_struct.h",
     "schema/ob_schema_utils.h",
     "schema/ob_sys_variable_sql_service.h",

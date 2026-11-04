@@ -15,6 +15,8 @@
  */
 
 #define USING_LOG_PREFIX SQL_RESV
+#include "sql/engine/ai_column/ai_column_service.h"
+#include "sql/resolver/ddl/ai_column_ddl.h"
 #include "sql/engine/basic/file_sql_native.h"
 #include "config_bridge.h"
 #include "ob_dml_resolver.h"
@@ -1834,6 +1836,7 @@ int ObDMLResolver::resolve_basic_column_item(const TableItem &table_item,
                                              ObDMLStmt *stmt /* = NULL */)
 {
   int ret = OB_SUCCESS;
+  if (ai_column::internal_execution()) { include_hidden = true; }
   ObColumnRefRawExpr *col_expr = NULL;
   ObSchemaGetterGuard *schema_guard = NULL;
   ColumnItem column_item;
@@ -1960,6 +1963,11 @@ int ObDMLResolver::resolve_basic_column_item(const TableItem &table_item,
         col_item = stmt->get_column_item(stmt->get_column_size() - 1);
       }
     }
+  }
+  if (OB_SUCC(ret) && !include_hidden && col_item != nullptr && col_item->expr_ != nullptr
+      && (col_item->expr_->get_column_flags() & AI_COLUMN_FLAG) != 0) {
+    if (OB_FAIL(params_.query_ctx_->ai_column_reads_.push_back(table_item.ref_id_))) {}
+    else { ret=params_.query_ctx_->ai_column_reads_.push_back(col_item->column_id_); }
   }
   return ret;
 }
@@ -10733,6 +10741,22 @@ int ObDMLResolver::resolve_basic_table(const ParseNode &parse_tree, TableItem *&
   }
 
 
+  if (OB_SUCC(ret) && table_item != nullptr && table_item->is_basic_table()
+      && params_.query_ctx_ != nullptr && !ai_column::internal_execution()) {
+    const ObTableSchema *schema = nullptr;
+    if (OB_FAIL(schema_checker_->get_table_schema(table_item->ref_id_,schema))) {}
+    else if (schema != nullptr) {
+      bool found = false;
+      for (int64_t i=0;i<schema->get_column_count()&&!found;++i) {
+        found = ai_column::is_ai(*schema->get_column_schema_by_idx(i));
+      }
+      if (found) {
+        auto &ids=params_.query_ctx_->ai_column_tables_;
+        bool exists=false;for(int64_t i=0;i<ids.count();++i){exists|=ids.at(i)==table_item->ref_id_;}
+        if(!exists){ret=ids.push_back(table_item->ref_id_);}
+      }
+    }
+  }
   return ret;
 }
 

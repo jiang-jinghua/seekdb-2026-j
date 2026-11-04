@@ -3529,7 +3529,8 @@ int ObSql::need_add_plan(const ObPlanCacheCtx &pc_ctx,
              || OB_ISNULL(result.get_exec_context().get_stmt_factory()->get_query_ctx())) {
     ret = OB_ERR_UNEXPECTED;
   } else if (result.get_exec_context().get_stmt_factory()->get_query_ctx()->has_hybrid_search()
-             || result.get_exec_context().get_stmt_factory()->get_query_ctx()->has_file_sql_) {
+             || result.get_exec_context().get_stmt_factory()->get_query_ctx()->has_file_sql_
+             || !result.get_exec_context().get_stmt_factory()->get_query_ctx()->ai_column_tables_.empty()) {
     need_add_plan = false;
   }
   return ret;
@@ -3788,6 +3789,11 @@ int ObSql::check_batched_multi_stmt_after_resolver(ObPlanCacheCtx &pc_ctx,
   if (OB_ISNULL(plan_ctx = pc_ctx.exec_ctx_.get_physical_plan_ctx())
       || OB_ISNULL(pc_ctx.sql_ctx_.session_info_)) {
     ret = OB_ERR_UNEXPECTED;
+  } else if (stmt.get_query_ctx() != nullptr
+             && !stmt.get_query_ctx()->ai_column_tables_.empty()) {
+    // Task maintenance must run once for the complete DML statement. Reparse
+    // the original VALUES list instead of executing a parameter-array batch.
+    is_valid = false;
   } else if (!(stmt.is_support_batch_exec_stmt() || stmt.is_explain_stmt())) {
     is_valid = false;
   } else {

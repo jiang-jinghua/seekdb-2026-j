@@ -1328,7 +1328,19 @@ int ObAIFuncModel::call_completion(ObString &prompt, ObJsonObject *config, ObStr
   ObAIFuncClient client;
   ObString unencrypted_access_key;
   ObString request_model_name = get_request_model_name();
-  if (!is_completion_type()) {
+  if (config != nullptr) {
+    const ObString key("__seekdb_ai_column_system");
+    auto *system = config->get_value(key);
+    if (system != nullptr) {
+      if (system->json_type() != ObJsonNodeType::J_STRING) { ret = OB_INVALID_ARGUMENT; }
+      else {
+        ret = ob_write_string(*allocator_,ObString(system->get_data_length(),system->get_data()),prompt_str);
+        if (OB_SUCC(ret)) { ret = config->remove(key); }
+      }
+    }
+  }
+  if (OB_FAIL(ret)) {
+  } else if (!is_completion_type()) {
     ret = OB_INVALID_ARGUMENT;
     LOG_USER_ERROR(OB_INVALID_ARGUMENT, "ai_complete, info type is not completion");
   } else if (OB_FAIL(ObAIFuncUtils::get_complete_provider(*allocator_, endpoint_info_.get_provider(), complete_provider))) {

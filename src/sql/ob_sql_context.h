@@ -631,6 +631,8 @@ public:
     type_demotion_flag_ = 0;
     has_hybrid_search_ = false;
     has_file_sql_ = false;
+    ai_column_tables_.reset();
+    ai_column_reads_.reset();
   }
 
   int64_t get_new_stmt_id() { return stmt_count_++; }
@@ -743,6 +745,8 @@ public:
   bool has_hybrid_search_;
   // Dynamic file schemas and snapshots must be rebound for each execution.
   bool has_file_sql_;
+  common::ObSEArray<uint64_t, 4> ai_column_tables_;
+  common::ObSEArray<uint64_t, 8> ai_column_reads_; // Alternating table/column IDs.
 };
 
 } /* ns sql*/

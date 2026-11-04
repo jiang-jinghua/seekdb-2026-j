@@ -15,6 +15,9 @@
  */
 
 #define USING_LOG_PREFIX SQL_RESV
+#include "sql/engine/ai_column/ai_column_service.h"
+#include "sql/resolver/ddl/ai_column_ddl.h"
+#include "sql/parser/ob_parser.h"
 #include "sql/resolver/dml/ob_update_resolver.h"
 
 namespace oceanbase
@@ -34,8 +37,50 @@ ObUpdateResolver::~ObUpdateResolver()
 {
 }
 
+int ObUpdateResolver::resolve_ai_retry(const ParseNode &node)
+{
+  int ret=OB_SUCCESS;
+  if(node.num_child_==4){ret=OB_NOT_SUPPORTED;LOG_USER_ERROR(OB_NOT_SUPPORTED,"combining AI COLUMN RETRY with another ALTER action");return ret;}
+  try{
+    const auto *relation=node.children_[0];
+    const auto database=relation->children_[0]?ai_column::node_text(relation->children_[0]):ai_column::text(session_info_->get_database_name());
+    const auto table=ai_column::node_text(relation->children_[1]);
+    const auto target=ai_column::node_text(node.children_[1]);
+    const ObTableSchema *schema=nullptr;
+    if(OB_FAIL(schema_checker_->get_table_schema(ObString(database.size(),database.data()),ObString(table.size(),table.data()),false,schema))){return ret;}
+    ai_column::Definition::check(schema!=nullptr,"AI RETRY table not found");
+    const auto *column=schema->get_column_schema(ObString(target.size(),target.data()));
+    if(!column||!ai_column::is_ai(*column)){ret=OB_NOT_SUPPORTED;LOG_USER_ERROR(OB_NOT_SUPPORTED,"retrying a column that is not an AI column");return ret;}
+    std::string predicate="TRUE";
+    if(node.children_[2]){
+      const auto raw=ai_column::node_text(node.children_[2]->children_[0]);
+      predicate.clear();char quote=0;
+      for(std::size_t i=0;i<raw.size();){const auto ch=raw[i];
+        if(quote){predicate+=ch;++i;if(ch==quote){if(i<raw.size()&&raw[i]==quote){predicate+=raw[i++];}else{quote=0;}}else if(ch=='\\'&&quote!='`'&&i<raw.size()){predicate+=raw[i++];}}
+        else if(ch=='\''||ch=='"'||ch=='`'){quote=ch;predicate+=ch;++i;}
+        else if((ch>='a'&&ch<='z')||(ch>='A'&&ch<='Z')||ch=='_'){
+          const auto begin=i++;while(i<raw.size()&&((raw[i]>='a'&&raw[i]<='z')||(raw[i]>='A'&&raw[i]<='Z')||(raw[i]>='0'&&raw[i]<='9')||raw[i]=='_')){++i;}
+          const auto token=raw.substr(begin,i-begin);
+          predicate+=ai_column::Definition::lower(token)=="status"?ai_column::Definition::quote_identifier(ai_column::hidden_name(column->get_column_id(),"state")):token;
+        }else{predicate+=ch;++i;}
+      }
+    }
+    const auto sql="UPDATE "+ai_column::Definition::quote_identifier(database)+"."+ai_column::Definition::quote_identifier(table)+" SET "+ai_column::Definition::quote_identifier(ai_column::hidden_name(column->get_column_id(),"spec"))+"='RETRY' WHERE "+predicate;
+    ObString stored;OZ(ob_write_string(*allocator_,ObString(sql.size(),sql.data()),stored));
+    ObParser parser(*allocator_,session_info_->get_sql_mode());ParseResult result;
+    if(OB_SUCC(ret)){ret=parser.parse(stored,result);}
+    if(OB_SUCC(ret)){
+      auto &ids=params_.query_ctx_->ai_column_tables_;ret=ids.push_back(schema->get_table_id());
+      ai_column::InternalExecutionScope internal_scope;
+      if(OB_SUCC(ret)){ret=resolve(*result.result_tree_->children_[0]);}
+    }
+  }catch(const std::exception &error){ret=OB_NOT_SUPPORTED;LOG_USER_ERROR(OB_NOT_SUPPORTED,error.what());}
+  return ret;
+}
+
 int ObUpdateResolver::resolve(const ParseNode &parse_tree)
 {
+  if(parse_tree.num_child_==3||parse_tree.num_child_==4){return resolve_ai_retry(parse_tree);}
   int ret = OB_SUCCESS;
   ObUpdateStmt *update_stmt = NULL;
   ObSEArray<ObTableAssignment, 2> tables_assign;

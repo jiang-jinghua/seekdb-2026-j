@@ -15,6 +15,7 @@
  */
 
 #define USING_LOG_PREFIX SQL_RESV
+#include "sql/engine/ai_column/ai_column_service.h"
 #include "ob_del_upd_resolver.h"
 #include "sql/resolver/dml/ob_default_value_utils.h"
 #include "sql/resolver/dml/ob_update_stmt.h"
@@ -122,6 +123,11 @@ int ObDelUpdResolver::resolve_assignments(const ParseNode &parse_node,
       if (OB_SUCC(ret) && T_INSERT_SCOPE == scope) {
         if (OB_FAIL(mock_values_column_ref(ref_expr))) {
         }
+      }
+      if (OB_SUCC(ret) && !ai_column::internal_execution()
+          && (ref_expr->get_column_flags() & AI_COLUMN_FLAG) != 0) {
+        ret = OB_NOT_SUPPORTED;
+        LOG_USER_ERROR(OB_NOT_SUPPORTED, "assigning an AI result column");
       }
       // process expression
       if (OB_SUCC(ret)) {
@@ -2158,6 +2164,9 @@ int ObDelUpdResolver::resolve_insert_columns(const ParseNode *node,
         ret = OB_ERR_UNEXPECTED;
       } else if (FALSE_IT(column_expr = static_cast<ObColumnRefRawExpr*>(ref_expr))) {
         //do nothing
+      } else if (!ai_column::internal_execution() && (column_expr->get_column_flags() & AI_COLUMN_FLAG) != 0) {
+        ret = OB_NOT_SUPPORTED;
+        LOG_USER_ERROR(OB_NOT_SUPPORTED, "inserting an AI result column");
       } else if (OB_FAIL(check_insert_column_duplicate(column_expr->get_column_id(), is_duplicate))) {
       } else if (is_duplicate) {
         ret = OB_ERR_FIELD_SPECIFIED_TWICE;

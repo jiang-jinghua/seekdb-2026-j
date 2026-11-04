@@ -18,6 +18,7 @@
 
 
 
+#include "sql/engine/ai_column/ai_column_service.h"
 #include "config_bridge.h"
 #include "lib/stat/ob_diagnostic_info_guard.h"
 #include "lib/time/ob_time_utility.h"
@@ -221,6 +222,7 @@ int ObService::start()
   if (OB_FAIL(ret)) {
     LOG_DBA_ERROR(OB_ERR_OBSERVICE_START, "msg", "observice start() has failure", KR(ret));
   }
+  if (OB_SUCC(ret)) { ret = sql::ai_column::start_worker(); }
   return ret;
 }
 
@@ -232,6 +234,7 @@ void ObService::set_stop()
 
 void ObService::stop()
 {
+  sql::ai_column::stop_worker();
   FLOG_INFO("[OBSERVICE_NOTICE] start to stop observice");
   if (!inited_) {
     FLOG_WARN_RET(OB_NOT_INIT, "ob_service not init", K_(inited));

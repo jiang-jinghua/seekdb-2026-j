@@ -12167,6 +12167,28 @@ int ObLogPlan::prepare_text_retrieval_merge(const ObIArray<ObRawExpr *> &merge_m
   return ret;
 }
 
+// Boolean-only natural-language matches need document membership, not BM25.
+static int fts_score_is_observable(ObRawExpr *expr, ObRawExpr *match, bool &observed, bool boolean_safe)
+{
+  int ret = OB_SUCCESS;
+  observed = false;
+  if (OB_ISNULL(expr)) {
+    ret = OB_ERR_UNEXPECTED;
+  } else if (expr == match || expr->is_column_ref_expr()) {
+    // Keep the scored path for data-table lookups as well as visible scores.
+    observed = true;
+  } else if (boolean_safe && expr->get_expr_type() == T_OP_BOOL && expr->get_param_count() == 1
+             && expr->get_param_expr(0) == match) {
+    // Retrieval emits 1 for matched documents. Projection/arithmetic keep BM25.
+  } else {
+    for (int64_t i = 0; OB_SUCC(ret) && !observed && i < expr->get_param_count(); ++i) {
+      if (OB_FAIL(SMART_CALL(fts_score_is_observable(expr->get_param_expr(i), match, observed, boolean_safe)))) {
+      }
+    }
+  }
+  return ret;
+}
+
 int ObLogPlan::prepare_text_retrieval_info(const uint64_t ref_table_id,
                                            const uint64_t index_table_id,
                                            ObMatchFunRawExpr *match_against,
@@ -12184,7 +12206,6 @@ int ObLogPlan::prepare_text_retrieval_info(const uint64_t ref_table_id,
   uint64_t inv_idx_tid = OB_INVALID_ID;
   ObSEArray<ObAuxTableMetaInfo, 4> index_infos;
   bool need_calc_relevance = true;
-  ObSEArray<ObExprConstraint, 2> constraints;
   uint64_t docid_col_id = OB_INVALID_ID;
   if (OB_ISNULL(match_against) || OB_ISNULL(get_stmt()) || OB_ISNULL(get_optimizer_context().get_query_ctx())) {
     ret = OB_INVALID_ARGUMENT;
@@ -12251,18 +12272,35 @@ int ObLogPlan::prepare_text_retrieval_info(const uint64_t ref_table_id,
     }
   }
   if (OB_SUCC(ret)) {
-    /*
-    if (OB_FAIL(ObTransformUtils::check_need_calc_match_score(get_optimizer_context().get_exec_ctx(),
-                                                              get_stmt(),
-                                                              match_against,
-                                                              need_calc_relevance,
-                                                              constraints))) {
-      LOG_WARN("failed to check need calc relevance", K(ret));
-    } else if (!need_calc_relevance &&
-               OB_FAIL(append_array_no_dup(get_optimizer_context().get_query_ctx()->all_expr_constraints_, constraints))) {
-      LOG_WARN("failed to append array no dup", K(ret));
+    bool has_membership_filter = false;
+    const auto &conditions = get_stmt()->get_condition_exprs();
+    for (int64_t i = 0; i < conditions.count(); ++i) {
+      const ObRawExpr *condition = conditions.at(i);
+      if (condition != nullptr && condition->get_expr_type() == T_OP_BOOL
+          && condition->get_param_count() == 1 && condition->get_param_expr(0) == match_against) {
+        has_membership_filter = true;
+      }
     }
-    */
+    if (has_membership_filter && match_against->get_mode_flag() == NATURAL_LANGUAGE_MODE
+        && !match_against->is_es_match() && match_against->get_columns_boosts().empty()
+        && get_stmt()->is_select_stmt() && get_stmt()->get_table_size() == 1
+        && get_stmt()->get_subquery_expr_size() == 0) {
+      ObSEArray<ObRawExpr *, 16> roots;
+      if (OB_FAIL(get_stmt()->get_relation_exprs(roots))) {
+      } else {
+        need_calc_relevance = roots.empty();
+        const auto &items = static_cast<const ObSelectStmt *>(get_stmt())->get_select_items();
+        for (int64_t i = 0; OB_SUCC(ret) && !need_calc_relevance && i < items.count(); ++i) {
+          if (OB_FAIL(fts_score_is_observable(items.at(i).expr_, match_against, need_calc_relevance, false))) {
+          }
+        }
+        for (int64_t i = 0; OB_SUCC(ret) && !need_calc_relevance && i < roots.count(); ++i) {
+          const bool is_condition = has_exist_in_array(get_stmt()->get_condition_exprs(), roots.at(i));
+          if (OB_FAIL(fts_score_is_observable(roots.at(i), match_against, need_calc_relevance, is_condition))) {
+          }
+        }
+      }
+    }
     tr_info.match_expr_ = match_against;
     tr_info.inv_idx_tid_ = inv_idx_tid;
     tr_info.fwd_idx_tid_ = fwd_idx_tid;

@@ -36,6 +36,7 @@
 #include "storage/fts/dict/ob_ft_dict_iterator.h"
 #include "storage/fts/dict/ob_ft_dict_table_iter.h"
 #include "storage/fts/dict/ob_ft_trie.h"
+#include <algorithm>
 
 #define USING_LOG_PREFIX STORAGE_FTS
 
@@ -382,7 +383,23 @@ int ObFTRangeDict::find_first_char_range(const ObString &single_word, ObIFTDict 
 {
   int ret = OB_SUCCESS;
   bool found = false;
-  for (int i = 0; OB_SUCC(ret) && !found && i < range_dicts_.size(); ++i) {
+  int64_t first = 0;
+  int64_t end = range_dicts_.size();
+  if (ranges_ordered_) {
+    // Choose the first inclusive upper bound. This also preserves the old
+    // first-match rule if adjacent ranges share an endpoint.
+    while (first < end) {
+      const int64_t mid = first + (end - first) / 2;
+      if (ObCharset::strcmp(CS_TYPE_UTF8MB4_BIN,
+                            range_dicts_[mid].end_.get_word(), single_word) < 0) {
+        first = mid + 1;
+      } else {
+        end = mid;
+      }
+    }
+    end = std::min(first + 1, static_cast<int64_t>(range_dicts_.size()));
+  }
+  for (int64_t i = first; OB_SUCC(ret) && !found && i < end; ++i) {
     if (ObCharset::strcmp(ObCollationType::CS_TYPE_UTF8MB4_BIN,
                           range_dicts_[i].start_.get_word(),
                           single_word)
@@ -418,6 +435,12 @@ int ObFTRangeDict::build_dict_from_cache(const ObFTCacheRangeContainer &range_co
       range.start_ = dat->start_word_;
       range.end_ = dat->end_word_;
       range.dict_ = dict;
+      if (range_dicts_.size() > 0) {
+        const auto &previous = range_dicts_[range_dicts_.size() - 1];
+        ranges_ordered_ = ranges_ordered_
+            && ObCharset::strcmp(CS_TYPE_UTF8MB4_BIN, previous.start_.get_word(), range.start_.get_word()) <= 0
+            && ObCharset::strcmp(CS_TYPE_UTF8MB4_BIN, previous.end_.get_word(), range.end_.get_word()) <= 0;
+      }
       if (OB_FAIL(range_dicts_.push_back(range))) {
       }
     }

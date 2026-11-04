@@ -39,7 +39,7 @@ public:
                 ObFTCacheRangeContainer *range_container,
                 const ObFTDictDesc &desc)
       : is_inited_(false), desc_(desc), range_alloc_(lib::ObMemAttr("Range Dict")),
-        range_dicts_(&range_alloc_), range_container_(range_container)
+        range_dicts_(&range_alloc_), range_container_(range_container), ranges_ordered_(true)
   {
   }
   ~ObFTRangeDict() override{};
@@ -106,6 +106,7 @@ private:
   ObArenaAllocator range_alloc_;
   ObVector<ObFTRange, ObArenaAllocator> range_dicts_;
   ObFTCacheRangeContainer *range_container_; // only used to read cache
+  bool ranges_ordered_;
 
 private:
   DISALLOW_COPY_AND_ASSIGN(ObFTRangeDict);

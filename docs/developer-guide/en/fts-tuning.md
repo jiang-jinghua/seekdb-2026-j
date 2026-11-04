@@ -22,7 +22,7 @@ precedence, stopword rules, token frequencies, and MATCH execution semantics.
   the multibyte decoder. Delimiter classification is unchanged.
 
 No input/result cache, benchmark-specific branch, reduced input, or skipped
-index/query work was introduced. Benchmark scripts, SQL, data generator, score
+necessary index/query work was introduced. Benchmark scripts, SQL, data generator, score
 calculator and checked-in CI baseline are unchanged.
 
 ## Local measurement
@@ -83,3 +83,65 @@ UTF-16/UTF-16LE SQL conversion errors were also unchanged; these errors do not
 constitute successful UTF-16 tokenization coverage. All benchmark MATCH hit
 counts agreed across the four measured runs. Correctness is established by the
 regressions and output comparisons, rather than hit counts alone.
+
+## Revision after platform evaluation: membership-only retrieval
+
+The submitted `6a44170af` received 0.048/50 on the platform, with reported mean
+improvement 0.0004813965. The first-stage local parser improvements were not a
+meaningful improvement in that evaluation. This revision instead removes
+unobservable BM25 work from eligible native retrieval scans.
+
+The optimizer requires a mandatory positive boolean MATCH condition in a
+single-table SELECT with no subquery expressions. It excludes boolean/ES modes,
+explicit column boosts, visible scores, score thresholds, and references to
+ordinary columns outside MATCH. Thus index-only membership queries such as
+COUNT(*) can avoid scoring; returning table columns, ranking, and numerical score
+uses retain the original path. The proof does not depend on query text, input
+data, or benchmark names.
+
+The legacy executor now tolerates absent BM25 aggregate scans, skips initializing
+unused estimators and score filters, and allocates its document-ID batch mask
+independently of scoring. Membership-only token iteration does not estimate
+document frequencies. Score-free batches use a positive membership value rather
+than zero; numerical score consumers are excluded from this mode. Long-query
+TAAT execution initializes its hash/spill partition without BM25 estimates and
+uses the posting scan's range when no score aggregate scan exists.
+
+All 17 native `fts_index` regressions passed. The added `membership_score` test
+compares against original-executable output for returned IDs, actual scores,
+ranking, common/missing/empty terms, LIMIT, score thresholds, boolean mode, and
+prepared threshold changes. An additional prepared-search-term sequence checks
+apple/missingword/banana/empty/apple reuse, followed by short/300-term/missing
+300-term/short queries to exercise the algorithm switch. Existing golden-result changes are
+restricted to four EXPLAIN lines changing `calc_relevance=true` to `false`; query
+result expectations are unchanged.
+
+For the comparison below, the exact submitted revision's six affected source
+files were restored in the isolated build and compiled with the same compiler
+and flags. Separate original and optimized executables were retained. Both ran
+the unchanged full benchmark twice on the same instance, with the configuration
+above and no concurrent compiler or regression process. Values are run means.
+
+| Metric | Submitted revision | New revision | Time reduction |
+| --- | ---: | ---: | ---: |
+| `build_ik_all_sec` | 2.84200 | 2.89800 | -1.97% |
+| `build_ik_content_sec` | 2.14550 | 2.15250 | -0.33% |
+| `build_beng_en_sec` | 1.30100 | 1.23750 | 4.88% |
+| `tokenize_ik_avg_ms` | 0.05020 | 0.05220 | -3.98% |
+| `tokenize_beng_avg_ms` | 0.03945 | 0.03210 | 18.63% |
+| `query_cn_avg_ms` | 0.94500 | 0.68830 | 27.16% |
+| `query_beng_avg_ms` | 1.40345 | 1.06210 | 24.32% |
+| `query_mixed_avg_ms` | 1.07400 | 0.79270 | 26.19% |
+| `query_limit_avg_ms` | 1.23975 | 1.23745 | 0.19% |
+
+Raw reports: [submitted 1](fts-tuning-results/before-score1.txt),
+[submitted 2](fts-tuning-results/before-score2.txt),
+[optimized 1](fts-tuning-results/after-score1.txt),
+[optimized 2](fts-tuning-results/after-score2.txt).
+
+This revision changes query execution, not construction or tokenization. Their
+differences above are recorded for completeness and are not attributed to the
+new optimization. All four MATCH hit counts agree across all four runs. The
+three index-only query cases show the intended reduction; the LIMIT case returns
+IDs internally and deliberately retains scoring. These local results do not
+establish an official score or a 50% overall improvement.

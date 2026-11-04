@@ -1,0 +1,54 @@
+# Membership-only scans must agree with scored retrieval and preserve score uses.
+--disable_warnings
+drop database if exists fts_membership;
+--enable_warnings
+create database fts_membership;
+use fts_membership;
+create table docs(id int primary key, body text,
+  fulltext index ft(body) with parser beng);
+insert into docs values
+  (1,'common apple apple'), (2,'common banana'),
+  (3,'common apple banana'), (4,'common cherry'),
+  (5,'common'), (6,''), (7,NULL), (8,'common banana apple cherry');
+select id from docs where match(body) against('apple banana') order by id;
+select count(*) from docs where match(body) against('apple banana');
+select count(*) from docs where match(body) against('common');
+select count(*) from docs where match(body) against('missingword');
+select count(*) from docs where match(body) against('');
+select count(*) from (select id from docs where match(body) against('apple banana') limit 2) x;
+select id, round(match(body) against('apple banana'),8) as score
+  from docs where match(body) against('apple banana') order by score desc,id;
+select id, (match(body) against('apple banana') > 0) as matched
+  from docs where match(body) against('apple banana') order by id;
+select count(*) from docs where match(body) against('apple banana') >= 0;
+select count(*) from docs where match(body) against('apple banana') = 0;
+select count(*) from docs where match(body) against('apple banana') > 1;
+select sum(score > 0) from (select match(body) against('apple banana') as score from docs) x;
+select id from docs where match(body) against('+apple -banana' in boolean mode) order by id;
+prepare q from 'select id from docs where match(body) against(''apple banana'') > ? order by id';
+set @cutoff=0;
+execute q using @cutoff;
+set @cutoff=100;
+execute q using @cutoff;
+set @cutoff=0;
+execute q using @cutoff;
+deallocate prepare q;
+prepare membership from 'select count(*) from docs where match(body) against(?)';
+set @term='apple';
+execute membership using @term;
+set @term='missingword';
+execute membership using @term;
+set @term='banana';
+execute membership using @term;
+set @term='';
+execute membership using @term;
+set @term='apple';
+execute membership using @term;
+set @term='apple zzterm000 zzterm001 zzterm002 zzterm003 zzterm004 zzterm005 zzterm006 zzterm007 zzterm008 zzterm009 zzterm010 zzterm011 zzterm012 zzterm013 zzterm014 zzterm015 zzterm016 zzterm017 zzterm018 zzterm019 zzterm020 zzterm021 zzterm022 zzterm023 zzterm024 zzterm025 zzterm026 zzterm027 zzterm028 zzterm029 zzterm030 zzterm031 zzterm032 zzterm033 zzterm034 zzterm035 zzterm036 zzterm037 zzterm038 zzterm039 zzterm040 zzterm041 zzterm042 zzterm043 zzterm044 zzterm045 zzterm046 zzterm047 zzterm048 zzterm049 zzterm050 zzterm051 zzterm052 zzterm053 zzterm054 zzterm055 zzterm056 zzterm057 zzterm058 zzterm059 zzterm060 zzterm061 zzterm062 zzterm063 zzterm064 zzterm065 zzterm066 zzterm067 zzterm068 zzterm069 zzterm070 zzterm071 zzterm072 zzterm073 zzterm074 zzterm075 zzterm076 zzterm077 zzterm078 zzterm079 zzterm080 zzterm081 zzterm082 zzterm083 zzterm084 zzterm085 zzterm086 zzterm087 zzterm088 zzterm089 zzterm090 zzterm091 zzterm092 zzterm093 zzterm094 zzterm095 zzterm096 zzterm097 zzterm098 zzterm099 zzterm100 zzterm101 zzterm102 zzterm103 zzterm104 zzterm105 zzterm106 zzterm107 zzterm108 zzterm109 zzterm110 zzterm111 zzterm112 zzterm113 zzterm114 zzterm115 zzterm116 zzterm117 zzterm118 zzterm119 zzterm120 zzterm121 zzterm122 zzterm123 zzterm124 zzterm125 zzterm126 zzterm127 zzterm128 zzterm129 zzterm130 zzterm131 zzterm132 zzterm133 zzterm134 zzterm135 zzterm136 zzterm137 zzterm138 zzterm139 zzterm140 zzterm141 zzterm142 zzterm143 zzterm144 zzterm145 zzterm146 zzterm147 zzterm148 zzterm149 zzterm150 zzterm151 zzterm152 zzterm153 zzterm154 zzterm155 zzterm156 zzterm157 zzterm158 zzterm159 zzterm160 zzterm161 zzterm162 zzterm163 zzterm164 zzterm165 zzterm166 zzterm167 zzterm168 zzterm169 zzterm170 zzterm171 zzterm172 zzterm173 zzterm174 zzterm175 zzterm176 zzterm177 zzterm178 zzterm179 zzterm180 zzterm181 zzterm182 zzterm183 zzterm184 zzterm185 zzterm186 zzterm187 zzterm188 zzterm189 zzterm190 zzterm191 zzterm192 zzterm193 zzterm194 zzterm195 zzterm196 zzterm197 zzterm198 zzterm199 zzterm200 zzterm201 zzterm202 zzterm203 zzterm204 zzterm205 zzterm206 zzterm207 zzterm208 zzterm209 zzterm210 zzterm211 zzterm212 zzterm213 zzterm214 zzterm215 zzterm216 zzterm217 zzterm218 zzterm219 zzterm220 zzterm221 zzterm222 zzterm223 zzterm224 zzterm225 zzterm226 zzterm227 zzterm228 zzterm229 zzterm230 zzterm231 zzterm232 zzterm233 zzterm234 zzterm235 zzterm236 zzterm237 zzterm238 zzterm239 zzterm240 zzterm241 zzterm242 zzterm243 zzterm244 zzterm245 zzterm246 zzterm247 zzterm248 zzterm249 zzterm250 zzterm251 zzterm252 zzterm253 zzterm254 zzterm255 zzterm256 zzterm257 zzterm258 zzterm259 zzterm260 zzterm261 zzterm262 zzterm263 zzterm264 zzterm265 zzterm266 zzterm267 zzterm268 zzterm269 zzterm270 zzterm271 zzterm272 zzterm273 zzterm274 zzterm275 zzterm276 zzterm277 zzterm278 zzterm279 zzterm280 zzterm281 zzterm282 zzterm283 zzterm284 zzterm285 zzterm286 zzterm287 zzterm288 zzterm289 zzterm290 zzterm291 zzterm292 zzterm293 zzterm294 zzterm295 zzterm296 zzterm297 zzterm298 zzterm299';
+execute membership using @term;
+set @term='zzterm000 zzterm001 zzterm002 zzterm003 zzterm004 zzterm005 zzterm006 zzterm007 zzterm008 zzterm009 zzterm010 zzterm011 zzterm012 zzterm013 zzterm014 zzterm015 zzterm016 zzterm017 zzterm018 zzterm019 zzterm020 zzterm021 zzterm022 zzterm023 zzterm024 zzterm025 zzterm026 zzterm027 zzterm028 zzterm029 zzterm030 zzterm031 zzterm032 zzterm033 zzterm034 zzterm035 zzterm036 zzterm037 zzterm038 zzterm039 zzterm040 zzterm041 zzterm042 zzterm043 zzterm044 zzterm045 zzterm046 zzterm047 zzterm048 zzterm049 zzterm050 zzterm051 zzterm052 zzterm053 zzterm054 zzterm055 zzterm056 zzterm057 zzterm058 zzterm059 zzterm060 zzterm061 zzterm062 zzterm063 zzterm064 zzterm065 zzterm066 zzterm067 zzterm068 zzterm069 zzterm070 zzterm071 zzterm072 zzterm073 zzterm074 zzterm075 zzterm076 zzterm077 zzterm078 zzterm079 zzterm080 zzterm081 zzterm082 zzterm083 zzterm084 zzterm085 zzterm086 zzterm087 zzterm088 zzterm089 zzterm090 zzterm091 zzterm092 zzterm093 zzterm094 zzterm095 zzterm096 zzterm097 zzterm098 zzterm099 zzterm100 zzterm101 zzterm102 zzterm103 zzterm104 zzterm105 zzterm106 zzterm107 zzterm108 zzterm109 zzterm110 zzterm111 zzterm112 zzterm113 zzterm114 zzterm115 zzterm116 zzterm117 zzterm118 zzterm119 zzterm120 zzterm121 zzterm122 zzterm123 zzterm124 zzterm125 zzterm126 zzterm127 zzterm128 zzterm129 zzterm130 zzterm131 zzterm132 zzterm133 zzterm134 zzterm135 zzterm136 zzterm137 zzterm138 zzterm139 zzterm140 zzterm141 zzterm142 zzterm143 zzterm144 zzterm145 zzterm146 zzterm147 zzterm148 zzterm149 zzterm150 zzterm151 zzterm152 zzterm153 zzterm154 zzterm155 zzterm156 zzterm157 zzterm158 zzterm159 zzterm160 zzterm161 zzterm162 zzterm163 zzterm164 zzterm165 zzterm166 zzterm167 zzterm168 zzterm169 zzterm170 zzterm171 zzterm172 zzterm173 zzterm174 zzterm175 zzterm176 zzterm177 zzterm178 zzterm179 zzterm180 zzterm181 zzterm182 zzterm183 zzterm184 zzterm185 zzterm186 zzterm187 zzterm188 zzterm189 zzterm190 zzterm191 zzterm192 zzterm193 zzterm194 zzterm195 zzterm196 zzterm197 zzterm198 zzterm199 zzterm200 zzterm201 zzterm202 zzterm203 zzterm204 zzterm205 zzterm206 zzterm207 zzterm208 zzterm209 zzterm210 zzterm211 zzterm212 zzterm213 zzterm214 zzterm215 zzterm216 zzterm217 zzterm218 zzterm219 zzterm220 zzterm221 zzterm222 zzterm223 zzterm224 zzterm225 zzterm226 zzterm227 zzterm228 zzterm229 zzterm230 zzterm231 zzterm232 zzterm233 zzterm234 zzterm235 zzterm236 zzterm237 zzterm238 zzterm239 zzterm240 zzterm241 zzterm242 zzterm243 zzterm244 zzterm245 zzterm246 zzterm247 zzterm248 zzterm249 zzterm250 zzterm251 zzterm252 zzterm253 zzterm254 zzterm255 zzterm256 zzterm257 zzterm258 zzterm259 zzterm260 zzterm261 zzterm262 zzterm263 zzterm264 zzterm265 zzterm266 zzterm267 zzterm268 zzterm269 zzterm270 zzterm271 zzterm272 zzterm273 zzterm274 zzterm275 zzterm276 zzterm277 zzterm278 zzterm279 zzterm280 zzterm281 zzterm282 zzterm283 zzterm284 zzterm285 zzterm286 zzterm287 zzterm288 zzterm289 zzterm290 zzterm291 zzterm292 zzterm293 zzterm294 zzterm295 zzterm296 zzterm297 zzterm298 zzterm299';
+execute membership using @term;
+set @term='apple';
+execute membership using @term;
+deallocate prepare membership;
+drop database fts_membership;

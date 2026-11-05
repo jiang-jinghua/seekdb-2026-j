@@ -124,7 +124,10 @@ ObAddWord::ObAddWord(
     stopword_cnt_(0),
     min_token_size_(property.min_token_size_),
     max_token_size_(property.max_token_size_),
-    flag_(flag)
+    flag_(flag),
+    scratch_buf_(nullptr),
+    scratch_pos_(0),
+    scratch_cap_(0)
 {
 }
 
@@ -164,15 +167,52 @@ int ObAddWord::casedown_word(const ObFTWord &src, ObFTWord &dst)
   if (OB_UNLIKELY(src.empty())) {
     ret = OB_INVALID_ARGUMENT;
   } else if (flag_.casedown()) {
-    ObString dst_str;
-    if (OB_FAIL(ObCharset::tolower(
-                    word_meta_.get_collation_type(),
-                    src.get_word().get_string(),
-                    dst_str,
-                    allocator_))) {
+    const ObCharsetInfo *cs_info = ObCharset::get_charset(word_meta_.get_collation_type());
+    if (OB_ISNULL(cs_info)) {
+      ret = OB_ERR_UNEXPECTED;
+    } else if (1 == cs_info->casedn_multiply) {
+      // Fast path: with casedn_multiply == 1 the lowercased output never
+      // exceeds the source length, so we can write it into a per-document
+      // bump-pointer buffer. This removes the per-token heap allocation and
+      // memcpy done inside ObCharset::tolower (ob_write_string) while
+      // producing exactly the same bytes, in the same memory lifetime class
+      // (allocated from allocator_, which outlives all consumers of the word
+      // map keys).
+      const ObString src_str = src.get_word().get_string();
+      if (OB_ISNULL(scratch_buf_) || scratch_cap_ - scratch_pos_ < src_str.length()) {
+        const int64_t chunk = MAX(src_str.length(), SCRATCH_CHUNK_SIZE);
+        char *buf = nullptr;
+        if (OB_ISNULL(buf = static_cast<char *>(allocator_.alloc(chunk)))) {
+          ret = OB_ALLOCATE_MEMORY_FAILED;
+        } else {
+          scratch_buf_ = buf;
+          scratch_pos_ = 0;
+          scratch_cap_ = chunk;
+        }
+      }
+      if (OB_SUCC(ret)) {
+        const size_t size = cs_info->cset->casedn(cs_info,
+                                                  const_cast<char *>(src_str.ptr()),
+                                                  src_str.length(),
+                                                  scratch_buf_ + scratch_pos_,
+                                                  scratch_cap_ - scratch_pos_);
+        ObFTWord tmp(static_cast<ObString::obstr_size_t>(size),
+                     scratch_buf_ + scratch_pos_,
+                     word_meta_);
+        dst = tmp;
+        scratch_pos_ += size;
+      }
     } else {
-      ObFTWord tmp(dst_str.length(), dst_str.ptr(), word_meta_);
-      dst = tmp;
+      ObString dst_str;
+      if (OB_FAIL(ObCharset::tolower(
+                      word_meta_.get_collation_type(),
+                      src.get_word().get_string(),
+                      dst_str,
+                      allocator_))) {
+      } else {
+        ObFTWord tmp(dst_str.length(), dst_str.ptr(), word_meta_);
+        dst = tmp;
+      }
     }
   } else {
     dst = src;

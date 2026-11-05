@@ -19,6 +19,8 @@
 
 #include "lib/charset/ob_charset.h"
 #include "lib/lock/ob_bucket_lock.h"
+#include "lib/lock/ob_rwlock.h"
+#include "lib/allocator/page_arena.h"
 #include "storage/fts/dict/ob_ft_dict_def.h"
 
 namespace oceanbase
@@ -93,10 +95,24 @@ private:
 };
 
 class ObFTCacheRangeContainer;
+class ObIFTDict;
 class ObFTDictHub
 {
 public:
-  ObFTDictHub() : is_inited_(false), dict_map_(), rw_dict_lock_() {}
+  static constexpr int K_IK_DICT_SLOT_CNT = 3; // main / quan / stop
+
+  ObFTDictHub()
+      : is_inited_(false),
+        dict_map_(),
+        rw_dict_lock_(),
+        dict_alloc_(lib::ObMemAttr("FtDictHub")),
+        ik_dict_lock_()
+  {
+    for (int i = 0; i < K_IK_DICT_SLOT_CNT; ++i) {
+      ik_range_dicts_[i] = nullptr;
+      ik_range_containers_[i] = nullptr;
+    }
+  }
   ~ObFTDictHub() {}
 
   int init();
@@ -106,6 +122,14 @@ public:
   int build_cache(const ObFTDictDesc &desc, ObFTCacheRangeContainer &container);
 
   int load_cache(const ObFTDictDesc &desc, ObFTCacheRangeContainer &container);
+
+  // Get a hub-owned, process-lifetime ObFTRangeDict for one of the built-in IK
+  // dictionaries. The dict (and its KVCache range handles) is built at most
+  // once and shared by every parser instance, so that per-document tokenizing
+  // no longer pays for re-loading the dict from the KVCache and re-creating
+  // the per-range wrapper objects. The returned dict is read-only after init
+  // and safe to share across threads.
+  int get_or_build_range_dict(const ObFTDictDesc &desc, ObIFTDict *&dict);
 
 private:
   int get_dict_info(const ObFTDictInfoKey &key, ObFTDictInfo &info);
@@ -118,6 +142,12 @@ private:
   // holds info of dict
   hash::ObHashMap<ObFTDictInfoKey, ObFTDictInfo> dict_map_;
   ObBucketLock rw_dict_lock_;
+  // long-lived allocator for the pinned, shared IK dictionaries
+  ObArenaAllocator dict_alloc_;
+  // protects the pinned dict slots below
+  ObRWLock ik_dict_lock_;
+  ObIFTDict *ik_range_dicts_[K_IK_DICT_SLOT_CNT];
+  ObFTCacheRangeContainer *ik_range_containers_[K_IK_DICT_SLOT_CNT];
 };
 
 } //  namespace storage

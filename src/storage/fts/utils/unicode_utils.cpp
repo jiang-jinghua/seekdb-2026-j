@@ -154,6 +154,12 @@ ob_wc_t ObUnicodeBlockUtils::get_unicode_from_u8(const char *input, const uint8_
 bool ObUnicodeBlockUtils::is_unicode_cn_number(ob_wc_t unicode)
 {
   // Chinese numerical characters: "一二两三四五六七八九十零壹贰叁肆伍陆柒捌玖拾百千万亿拾佰仟萬億兆卅廿"
+  // All of them live in the CJK Unified Ideographs block (0x4E00 - 0x9FFF),
+  // so a single range check rejects almost every codepoint before the
+  // table scan. This is called once per CJK character while tokenizing.
+  if (unicode < 0x4E00 || unicode > 0x9FFF) {
+    return false;
+  }
   static const ob_wc_t cn_number_array[] = {
       OB_IK_GET_NUMBER_UNICODE("一"), OB_IK_GET_NUMBER_UNICODE("二"),
       OB_IK_GET_NUMBER_UNICODE("两"), OB_IK_GET_NUMBER_UNICODE("三"),

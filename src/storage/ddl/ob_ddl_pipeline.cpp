@@ -893,6 +893,112 @@ int ObHNSWIndexAppendBufferOperator::append_row(
   return ret;
 }
 
+// [contest] Batch hand-off: the DDL already delivers ObBatchDatumRows, but append_row
+// re-acquires the adaptor and calls add_snap_index(..., num = 1) per row. For a 250K
+// row table that is 250K adapter lookups + 250K snapshot appends. This packs the whole
+// chunk into one contiguous float buffer and issues a single add_snap_index call.
+int ObHNSWIndexAppendBufferOperator::append_rows(
+    const int64_t row_count,
+    const common::ObIArray<common::ObIVector *> &vectors,
+    ObDDLTabletContext *tablet_context)
+{
+  int ret = OB_SUCCESS;
+  if (row_count <= 1 || vectors.count() <= vector_vid_col_idx_ ||
+      vectors.count() <= vector_col_idx_ || OB_ISNULL(tablet_context) ||
+      OB_ISNULL(tablet_context->vector_index_ctx_)) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("invalid argument for batch vector append", K(ret), K(row_count));
+  } else {
+    ObIVectorIndexRuntime *vec_index_service =
+        ::oceanbase::share::server_service<::oceanbase::storage::ObIVectorIndexRuntime>();
+    ObPluginVectorIndexAdapterGuard adaptor_guard;
+    if (OB_ISNULL(vec_index_service)) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("error unexpected, vector index service is nullptr", K(ret));
+    } else if (OB_FAIL(vec_index_service->acquire_adapter_guard(tablet_id_,
+                   ObIndexType::INDEX_TYPE_VEC_INDEX_SNAPSHOT_DATA_LOCAL, adaptor_guard,
+                   &tablet_context->vector_index_ctx_->vec_idx_param_,
+                   tablet_context->vector_index_ctx_->vec_dim_))) {
+      LOG_WARN("failed to acquire adapter guard for batch append", K(ret));
+    } else if (OB_ISNULL(adaptor_guard.get_adatper())) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("get null vector index adaptor", K(ret));
+    } else if (adaptor_guard.get_adatper()->is_sparse_vector_index_type()) {
+      // Sparse vectors are variable length; keep the original per-row path.
+      for (int64_t i = 0; OB_SUCC(ret) && i < row_count; ++i) {
+        if (OB_FAIL(append_row(i, vectors, tablet_context))) {
+          LOG_WARN("failed to append sparse row", K(ret), K(i));
+        }
+      }
+    } else {
+      const int64_t dim = tablet_context->vector_index_ctx_->vec_dim_;
+      const int64_t extra_count = extra_column_idx_types_.count();
+      float *batch_vecs = nullptr;
+      int64_t *batch_vids = nullptr;
+      ObVecExtraInfoObj *batch_extra = nullptr;
+      int64_t packed = 0;
+      row_allocator_.reuse();
+      if (dim <= 0 || OB_ISNULL(batch_vecs = static_cast<float *>(
+                                    row_allocator_.alloc(sizeof(float) * dim * row_count))) ||
+          OB_ISNULL(batch_vids = static_cast<int64_t *>(
+                        row_allocator_.alloc(sizeof(int64_t) * row_count)))) {
+        ret = OB_ALLOCATE_MEMORY_FAILED;
+        LOG_WARN("failed to allocate batch buffers", K(ret), K(dim), K(row_count));
+      } else if (extra_count > 0 &&
+                 OB_ISNULL(batch_extra = static_cast<ObVecExtraInfoObj *>(
+                               row_allocator_.alloc(sizeof(ObVecExtraInfoObj) * extra_count * row_count)))) {
+        ret = OB_ALLOCATE_MEMORY_FAILED;
+        LOG_WARN("failed to allocate batch extra buffer", K(ret), K(extra_count), K(row_count));
+      } else if (extra_count > 0) {
+        new (batch_extra) ObVecExtraInfoObj[extra_count * row_count];
+      }
+      for (int64_t i = 0; OB_SUCC(ret) && i < row_count; ++i) {
+        ObString vec_str;
+        if (vectors.at(vector_col_idx_)->is_null(i)) {
+          continue;
+        }
+        vec_str = vectors.at(vector_col_idx_)->get_string(i);
+        if (vec_str.empty()) {
+          continue;
+        }
+        if (OB_FAIL(read_full_lob_string(
+                row_allocator_, ObLongTextType, CS_TYPE_BINARY, true, vec_str))) {
+          LOG_WARN("failed to read vector lob", K(ret), K(i));
+        } else if (vec_str.length() != dim * static_cast<int64_t>(sizeof(float))) {
+          ret = OB_ERR_UNEXPECTED;
+          LOG_WARN("invalid vector length in batch append", K(ret), K(i), K(dim),
+                   K(vec_str.length()));
+        } else {
+          MEMCPY(reinterpret_cast<char *>(batch_vecs) + packed * dim * sizeof(float),
+                 vec_str.ptr(), vec_str.length());
+          batch_vids[packed] = vectors.at(vector_vid_col_idx_)->get_int(i);
+          for (int64_t e = 0; OB_SUCC(ret) && e < extra_count; ++e) {
+            const share::ObExtraInfoIdxType &extra_idx = extra_column_idx_types_.at(e);
+            if (vectors.count() <= extra_idx.idx_) {
+              ret = OB_ERR_UNEXPECTED;
+              LOG_WARN("invalid extra column idx", K(ret), K(extra_idx.idx_), K(vectors.count()));
+            } else if (OB_FAIL(batch_extra[packed * extra_count + e].from_vector(
+                           *vectors.at(extra_idx.idx_), i, extra_idx.type_, &row_allocator_))) {
+              LOG_WARN("failed to pack extra info", K(ret), K(i), K(e));
+            }
+          }
+          if (OB_SUCC(ret)) {
+            ++packed;
+          }
+        }
+      }
+      if (OB_SUCC(ret) && packed > 0) {
+        if (OB_FAIL(adaptor_guard.get_adatper()->add_snap_index(
+                batch_vecs, batch_vids, batch_extra, extra_count,
+                static_cast<int>(packed)))) {
+          LOG_WARN("failed to append rows in batch", K(ret), K(packed), K(extra_count));
+        }
+      }
+    }
+  }
+  return ret;
+}
+
 int ObHNSWIndexAppendBufferOperator::append_row_file(ObDDLRowFile *row_file, ObDDLTabletContext *tablet_context)
 {
   int ret = OB_SUCCESS;
@@ -910,8 +1016,16 @@ int ObHNSWIndexAppendBufferOperator::append_row_file(ObDDLRowFile *row_file, ObD
     } else {
       const ObArray<common::ObIVector *> &vectors = datum_rows->vectors_;
       const int64_t total_row_count = datum_rows->row_count_;
-      for (int64_t i = 0; OB_SUCC(ret) && i < total_row_count; ++i) {
-        if (OB_FAIL(append_row(i, vectors, tablet_context))) {
+      static const bool no_batch = (::getenv("SEEKDB_VEC_NO_BATCH") != nullptr);
+      if (!no_batch && total_row_count > 1) {
+        // [contest] hand the whole chunk to the index in one call
+        if (OB_FAIL(append_rows(total_row_count, vectors, tablet_context))) {
+          LOG_WARN("failed to append vector rows in batch", K(ret), K(total_row_count));
+        }
+      } else {
+        for (int64_t i = 0; OB_SUCC(ret) && i < total_row_count; ++i) {
+          if (OB_FAIL(append_row(i, vectors, tablet_context))) {
+          }
         }
       }
     }

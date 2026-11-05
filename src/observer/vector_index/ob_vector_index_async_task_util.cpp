@@ -1313,6 +1313,11 @@ int ObVecIndexAsyncTask::process_data_for_index(ObPluginVectorIndexAdaptor &adap
       }
       char *curr_vector_ptr = (char *)vectors;
       uint32_t curr_total_length = 0;
+      // [contest-instrumentation] split the DDL build into "scan rows" vs "hand off
+      // to the index backend", so the 16s constant in the baseline stops being a guess.
+      const int64_t ddl_scan_start_us = ObTimeUtility::current_time();
+      int64_t ddl_add_us = 0;
+      int64_t ddl_rows = 0;
       while (OB_SUCC(ret)) {
         blocksstable::ObDatumRow *datum_vid = nullptr;
         blocksstable::ObDatumRow *datum_row = nullptr;
@@ -1392,13 +1397,15 @@ int ObVecIndexAsyncTask::process_data_for_index(ObPluginVectorIndexAdaptor &adap
                 curr_vector_ptr += vector_str.length();
               }
             } else {
-              for (int j = 0; OB_SUCC(ret) && j < dim; j++) {
-                vectors[current_count * dim + j] = vector_ptr[j];
-              }
+              // [contest] was a per-element copy loop (dim scalar stores per row);
+              // the source is the raw float32 vector blob, so one memcpy is enough.
+              MEMCPY(vectors + static_cast<int64_t>(current_count) * dim, vector_ptr,
+                     static_cast<size_t>(dim) * sizeof(float));
             }
             vids[current_count] = vid_datum->storage_datums_[vid_column_pos].get_int();
             vid_bound.set_vid(vid_datum->storage_datums_[vid_column_pos].get_int());
             current_count += 1;
+            ++ddl_rows;
             if (adaptor.is_sparse_vector_index_type()) {
               if (curr_total_length >= VEC_INDEX_IPIVF_BUILD_COUNT_THRESHOLD
                   || current_count >= VEC_INDEX_HNSWSQ_BUILD_COUNT_THRESHOLD) {
@@ -1416,10 +1423,12 @@ int ObVecIndexAsyncTask::process_data_for_index(ObPluginVectorIndexAdaptor &adap
               }
             } else {
               if (current_count >= VEC_INDEX_HNSWSQ_BUILD_COUNT_THRESHOLD) {
+                const int64_t t_add_start = ObTimeUtility::current_time();
                 if (OB_FAIL(adaptor.add_snap_index(vectors, vids, out_extra_obj, extra_column_count, current_count))) {
                 } else {
                   current_count = 0;
                 }
+                ddl_add_us += ObTimeUtility::current_time() - t_add_start;
               }
             }
           }
@@ -1427,6 +1436,10 @@ int ObVecIndexAsyncTask::process_data_for_index(ObPluginVectorIndexAdaptor &adap
         DEBUG_SYNC(CANCEL_VEC_TASK_ADD_SNAP_INDEX);
         CHECK_TASK_CANCELLED_IN_PROCESS(ret, loop_cnt, ctx_);
       }
+      LOG_INFO("[VEC-DDL][scan] scan+handoff timing", "rows", ddl_rows, "add_us", ddl_add_us,
+               "total_us", ObTimeUtility::current_time() - ddl_scan_start_us,
+               "scan_us", ObTimeUtility::current_time() - ddl_scan_start_us - ddl_add_us,
+               K(ret));
       if (ret == OB_ITER_END) {
         ret = OB_SUCCESS;
       }

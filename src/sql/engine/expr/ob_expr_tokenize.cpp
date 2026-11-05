@@ -39,6 +39,26 @@ namespace oceanbase
 {
 namespace sql
 {
+
+namespace
+{
+// Formatting the parser properties is a pure function of (parser name, raw
+// properties). Most calls pass no properties at all, so the formatted JSON is
+// constant per parser. Cache it per thread to avoid repeating the JSON
+// parse/rebuild/format for every statement. Only the empty-properties case is
+// cached, which keeps the cache key small and the behaviour identical.
+struct TokenizePropsCacheEntry
+{
+  bool used = false;
+  int64_t name_len = 0;
+  int64_t prop_len = 0;
+  char name[32];
+  char props[512];
+};
+static constexpr int64_t TOKENIZE_PROPS_CACHE_SLOTS = 4;
+static thread_local TokenizePropsCacheEntry g_tokenize_props_cache[TOKENIZE_PROPS_CACHE_SLOTS];
+static thread_local int64_t g_tokenize_props_cache_next = 0;
+} // namespace
 ObExprTokenize::ObExprTokenize(common::ObIAllocator &alloc)
     : ObStringExprOperator(alloc,
                            T_FUN_TOKENIZE,
@@ -377,6 +397,20 @@ int ObExprTokenize::TokenizeParam::reform_parser_properties(const ObString &prop
   int ret = OB_SUCCESS;
   storage::ObFTParserJsonProps parser_properties;
 
+  // Fast path: no parser arguments, so the formatted result only depends on the
+  // parser name. Reuse the bytes produced by an earlier identical call.
+  if (properties.empty() && parser_name_.length() > 0
+      && parser_name_.length() <= static_cast<int64_t>(sizeof(TokenizePropsCacheEntry::name))) {
+    for (int64_t i = 0; i < TOKENIZE_PROPS_CACHE_SLOTS; ++i) {
+      TokenizePropsCacheEntry &entry = g_tokenize_props_cache[i];
+      if (entry.used && entry.name_len == parser_name_.length()
+          && 0 == MEMCMP(entry.name, parser_name_.ptr(), entry.name_len)) {
+        properties_.assign_ptr(entry.props, static_cast<int32_t>(entry.prop_len));
+        return OB_SUCCESS;
+      }
+    }
+  }
+
   if (OB_FAIL(parser_properties.init())) {
   } else if (OB_FAIL(parser_properties.parse_from_valid_str(properties))) {
     LOG_USER_ERROR(OB_INVALID_ARGUMENT, "parser properties invalid.");
@@ -384,6 +418,18 @@ int ObExprTokenize::TokenizeParam::reform_parser_properties(const ObString &prop
                                                              ObCollationType::CS_TYPE_UTF8MB4_BIN,
                                                              true))) {
   } else if (OB_FAIL(parser_properties.to_format_json(allocator_, properties_))) {
+  }
+
+  if (OB_SUCC(ret) && properties.empty() && parser_name_.length() > 0
+      && parser_name_.length() <= static_cast<int64_t>(sizeof(TokenizePropsCacheEntry::name))
+      && properties_.length() <= static_cast<int64_t>(sizeof(TokenizePropsCacheEntry::props))) {
+    TokenizePropsCacheEntry &entry =
+        g_tokenize_props_cache[g_tokenize_props_cache_next++ % TOKENIZE_PROPS_CACHE_SLOTS];
+    entry.used = true;
+    entry.name_len = parser_name_.length();
+    entry.prop_len = properties_.length();
+    MEMCPY(entry.name, parser_name_.ptr(), entry.name_len);
+    MEMCPY(entry.props, properties_.ptr(), entry.prop_len);
   }
 
   return ret;

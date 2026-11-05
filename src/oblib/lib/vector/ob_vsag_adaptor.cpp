@@ -30,6 +30,7 @@
 #include <cstdlib>
 #include <cstdio>
 #include <cstring>
+#include <atomic>
 #include <pthread.h>
 #include "vsag/vsag.h"
 #include "vsag/errors.h"
@@ -79,6 +80,13 @@ using namespace vsag;
 // runs seekdb's real vector-adaptor data path on the GPU. PoC: single writer per
 // index, results allocated with the handle's allocator (drop-in with VSAG path).
 namespace {
+// [contest-instrumentation] How the DDL feeds vectors (call count / row count) and
+// where the end-to-end build time actually goes. Two relaxed atomics + a handful of
+// clock reads per index build: negligible cost, but it turns "23s vs 30s" from a
+// guess into four numbers on the scoring machine.
+static std::atomic<uint64_t> g_cuvs_add_calls{0};
+static std::atomic<uint64_t> g_cuvs_add_rows{0};
+
 struct ObCuvsEntry {
   std::shared_ptr<void> bridge_;// opaque handle from seekdb_cuvs_build
   int dim_ = 0;
@@ -171,6 +179,8 @@ static void ob_cuvs_register(void *key, const float *vectors, const int64_t *ids
 static void ob_cuvs_add(void *key, const float *vectors, const int64_t *ids,
                         int dim, int size) {
   if (vectors == nullptr || ids == nullptr || dim <= 0 || size <= 0) { return; }
+  g_cuvs_add_calls.fetch_add(1, std::memory_order_relaxed);
+  g_cuvs_add_rows.fetch_add(static_cast<uint64_t>(size), std::memory_order_relaxed);
   std::lock_guard<std::mutex> guard(g_ob_cuvs_mu);
   ObCuvsEntry *&slot = g_ob_cuvs_reg[key];
   if (slot == nullptr) { slot = new ObCuvsEntry(); slot->dim_ = dim; }
@@ -405,6 +415,7 @@ static bool ob_cuvs_serialize(void *key, std::ostream &out, int &ret) {
     ent->bridge_ = nb; ent->built_n_ = n; ent->ids_ = ent->buf_ids_;
     built = true;
   }
+  const int64_t build_done_us = ObTimeUtility::current_time();
   ObCuvsSnapshotFile graph;
   ObCuvsSnapshotJob job{graph.path_, ent->bridge_.get(), static_cast<long>(n), ent->dim_, false, -1};
   if (graph.file_ == nullptr || !ob_cuvs_snapshot_big_stack(job) ||
@@ -414,7 +425,9 @@ static bool ob_cuvs_serialize(void *key, std::ostream &out, int &ret) {
   }
   const uint64_t graph_bytes = static_cast<uint64_t>(::ftello(graph.file_));
   ::rewind(graph.file_);
-  const int64_t build_us = ObTimeUtility::current_time() - start_us;
+  const int64_t graph_done_us = ObTimeUtility::current_time();
+  const int64_t build_us = graph_done_us - start_us;
+  const int64_t gpu_build_us = build_done_us - start_us;
   const int32_t dim32 = ent->dim_;
   const int32_t reserved = 0;
   const int64_t n64 = static_cast<int64_t>(n);
@@ -439,14 +452,22 @@ static bool ob_cuvs_serialize(void *key, std::ostream &out, int &ret) {
     }
     remaining -= bytes;
   }
+  const int64_t write_done_us = ObTimeUtility::current_time();
+  const int64_t graph_us = build_us - gpu_build_us;
+  const int64_t write_us = write_done_us - graph_done_us;
   LOG_INFO("[OBVSAG][cuVS] serialized GPU CAGRA snapshot", KP(key), K(n), K(dim32),
            K(built), K(build_us), K(graph_bytes));
+  LOG_INFO("[OBVSAG][cuVS] build-timing", KP(key), K(n), "gpu_build_us", gpu_build_us,
+           "graph_us", graph_us, "write_us", write_us, "add_calls",
+           g_cuvs_add_calls.load(std::memory_order_relaxed), "add_rows",
+           g_cuvs_add_rows.load(std::memory_order_relaxed), K(graph_bytes));
   return true;
 }
 
 // Consumes the stream after the magic. Registers and marks the handle for GPU search.
 static int ob_cuvs_deserialize(void *key, int expected_dim, std::istream &in) {
   int ret = OB_SUCCESS;
+  const int64_t load_start_us = ObTimeUtility::current_time();
   uint64_t graph_bytes = 0;
   int32_t dim32 = 0;
   int32_t reserved = 0;
@@ -507,6 +528,8 @@ static int ob_cuvs_deserialize(void *key, int expected_dim, std::istream &in) {
       }
       LOG_INFO("[OBVSAG][cuVS] deserialized GPU CAGRA snapshot", KP(key), K(n64), K(dim32),
                K(graph_bytes));
+      LOG_INFO("[OBVSAG][cuVS] load-timing", KP(key), K(n64), "load_us",
+               ObTimeUtility::current_time() - load_start_us, K(graph_bytes));
     }
   }
   return ret;

@@ -298,6 +298,12 @@ private:
       const int64_t row_pos,
       const common::ObIArray<common::ObIVector *> &vectors,
       ObDDLTabletContext *tablet_context);
+  // [contest] batch variant of append_row: one adaptor hand-off for the whole
+  // chunk instead of one per row.
+  int append_rows(
+      const int64_t row_count,
+      const common::ObIArray<common::ObIVector *> &vectors,
+      ObDDLTabletContext *tablet_context);
   int append_row_file(ObDDLRowFile *row_file, ObDDLTabletContext *tablet_context);
 private:
   int64_t vec_dim_;

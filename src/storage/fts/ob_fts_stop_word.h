@@ -124,6 +124,8 @@ private:
   int check_stopword(const ObFTWord &word, bool &is_stopword);
   int groupby_word(const ObFTWord &word, const int64_t word_cnt);
 private:
+  // default chunk size of the casedown scratch buffer
+  static constexpr int64_t SCRATCH_CHUNK_SIZE = 4096;
   ObObjMeta word_meta_;
   common::ObIAllocator &allocator_;
   ObFTWordMap &word_map_;
@@ -133,6 +135,13 @@ private:
   int64_t min_token_size_;
   int64_t max_token_size_;
   ObAddWordFlag flag_;
+  // Bump-pointer scratch buffer used by casedown_word so that lowercasing a
+  // token does not need one heap allocation per token. Memory comes from
+  // allocator_, the same lifetime class as the per-token copies made by
+  // ObCharset::tolower before this optimization.
+  char *scratch_buf_;
+  int64_t scratch_pos_;
+  int64_t scratch_cap_;
 };
 
 } // end namespace storage

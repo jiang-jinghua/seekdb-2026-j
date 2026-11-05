@@ -382,13 +382,25 @@ int ObFTRangeDict::find_first_char_range(const ObString &single_word, ObIFTDict 
 {
   int ret = OB_SUCCESS;
   bool found = false;
+  // Fast prefilter: single_word is exactly one character and all ranges use
+  // CS_TYPE_UTF8MB4_BIN, where byte order equals codepoint order. A word can
+  // only fall inside [start_, end_] if its first byte lies between the ranges'
+  // first bytes, so we can skip the expensive ObCharset::strcmp dispatch for
+  // ranges that cannot match.
+  const char first_byte = single_word.empty() ? '\0' : single_word.ptr()[0];
   for (int i = 0; OB_SUCC(ret) && !found && i < range_dicts_.size(); ++i) {
+    const ObString &start_word = range_dicts_[i].start_.get_word();
+    const ObString &end_word = range_dicts_[i].end_.get_word();
+    if (!start_word.empty() && !end_word.empty()
+        && (first_byte < start_word.ptr()[0] || first_byte > end_word.ptr()[0])) {
+      continue;
+    }
     if (ObCharset::strcmp(ObCollationType::CS_TYPE_UTF8MB4_BIN,
-                          range_dicts_[i].start_.get_word(),
+                          start_word,
                           single_word)
             <= 0
         && ObCharset::strcmp(ObCollationType::CS_TYPE_UTF8MB4_BIN,
-                             range_dicts_[i].end_.get_word(),
+                             end_word,
                              single_word)
                >= 0) {
       dict = range_dicts_[i].dict_;

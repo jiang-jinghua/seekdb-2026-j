@@ -74,8 +74,6 @@ private:
 private:
   int init_dict(const ObFTParserParam &param);
 
-  int init_single_dict(ObFTDictDesc desc, ObFTCacheRangeContainer &container);
-
   int init_segmenter(const ObFTParserParam &param);
 
   int init_ctx(const ObFTParserParam &param);
@@ -98,7 +96,11 @@ private:
   ObFTDictHub *hub_;
   ObList<ObIIKProcessor *, ObIAllocator> segmenters_;
 
-  // For now there's no change of dict in one query, so we can pin dict this level.
+  // The built-in IK dictionaries are hub-owned, process-lifetime, read-only
+  // objects shared by all parser instances (see ObFTDictHub::
+  // get_or_build_range_dict). The parser only keeps non-owning pointers and
+  // must not destroy them. The cache_* containers below are kept for
+  // compatibility but are no longer used by the IK parser.
   ObFTCacheRangeContainer cache_main_;
   ObFTCacheRangeContainer cache_quan_;
   ObFTCacheRangeContainer cache_stop_;

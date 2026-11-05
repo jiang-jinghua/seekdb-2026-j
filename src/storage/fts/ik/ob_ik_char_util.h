@@ -74,8 +74,16 @@ public:
                                   bool &ignore);
 
 private:
+  // Decode the character once and classify it by evaluating every predicate on
+  // the decoded codepoint, instead of re-decoding the same bytes inside each
+  // is_xxx<CS_TYPE>() helper.
   template <ObCharsetType CS_TYPE>
-  static int do_classify(const char *input, const uint8_t char_len, CharType &type);
+  static typename std::enable_if<(CS_TYPE == CHARSET_UTF8MB4), int>::type
+  do_classify(const char *input, const uint8_t char_len, CharType &type);
+
+  template <ObCharsetType CS_TYPE>
+  static typename std::enable_if<(CS_TYPE == CHARSET_UTF16 || CS_TYPE == CHARSET_UTF16LE), int>::type
+  do_classify(const char *input, const uint8_t char_len, CharType &type);
 
 private:
   /*************************  Alpha: english letter abc *********************/
@@ -441,30 +449,59 @@ inline int ObFTCharUtil::is_ignore_single_cjk(ObCollationType coll_type,
   return ret;
 }
 
+// Decode the codepoint once and evaluate every predicate on it.
+//
+// This is semantically identical to the previous implementation, in which each
+// is_xxx<CS_TYPE>() helper decoded the very same character independently (up to
+// 5 decodes per character) before evaluating its predicate, because every
+// predicate in ObUnicodeBlockUtils is a pure function of the decoded codepoint
+// and the decode result is deterministic for the same input bytes. Decoding is
+// the dominant per-character cost of the tokenize loop, so this saves up to 4
+// redundant decodes plus function dispatch per character.
 template <ObCharsetType CS_TYPE>
-inline int ObFTCharUtil::do_classify(const char *input, const uint8_t char_len, CharType &type)
+inline typename std::enable_if<(CS_TYPE == CHARSET_UTF8MB4), int>::type
+ObFTCharUtil::do_classify(const char *input, const uint8_t char_len, CharType &type)
 {
   int ret = OB_SUCCESS;
-  bool checker = false;
   type = CharType::USELESS;
-
-  if (OB_FAIL(is_alpha<CS_TYPE>(input, char_len, checker))) {
-  } else if (checker) {
+  ob_wc_t unicode = 0;
+  if (OB_FAIL(decode_unicode<CS_TYPE>(input, char_len, unicode))) {
+    // already logged
+  } else if (ObUnicodeBlockUtils::is_alpha(unicode)) {
     type = CharType::ENGLISH_LETTER;
-  } else if (OB_FAIL(is_arabic<CS_TYPE>(input, char_len, checker))) {
-  } else if (checker) {
+  } else if (ObUnicodeBlockUtils::is_arabic(unicode)) {
     type = CharType::ARABIC_LETTER;
-  } else if (OB_FAIL(is_chinese<CS_TYPE>(input, char_len, checker))) {
-  } else if (checker) {
+  } else if (ObUnicodeBlockUtils::is_chinese(unicode)) {
     type = CharType::CHINESE;
-  } else if (OB_FAIL(is_other_cjk<CS_TYPE>(input, char_len, checker))) {
-  } else if (checker) {
+  } else if (ObUnicodeBlockUtils::is_other_cjk(unicode)) {
     type = CharType::OTHER_CJK;
-  } else if (OB_FAIL(is_surrogate_high<CS_TYPE>(input, char_len, checker))) {
-  } else if (checker) {
+  }
+  // Surrogate checks are intentionally omitted: for non-UTF16 charsets the
+  // previous implementation instantiated is_surrogate_high/low with
+  // enable_if so that they always returned false without decoding.
+  return ret;
+}
+
+template <ObCharsetType CS_TYPE>
+inline typename std::enable_if<(CS_TYPE == CHARSET_UTF16 || CS_TYPE == CHARSET_UTF16LE), int>::type
+ObFTCharUtil::do_classify(const char *input, const uint8_t char_len, CharType &type)
+{
+  int ret = OB_SUCCESS;
+  type = CharType::USELESS;
+  ob_wc_t unicode = 0;
+  if (OB_FAIL(decode_unicode<CS_TYPE>(input, char_len, unicode))) {
+    // already logged
+  } else if (ObUnicodeBlockUtils::is_alpha(unicode)) {
+    type = CharType::ENGLISH_LETTER;
+  } else if (ObUnicodeBlockUtils::is_arabic(unicode)) {
+    type = CharType::ARABIC_LETTER;
+  } else if (ObUnicodeBlockUtils::is_chinese(unicode)) {
+    type = CharType::CHINESE;
+  } else if (ObUnicodeBlockUtils::is_other_cjk(unicode)) {
+    type = CharType::OTHER_CJK;
+  } else if (ObUnicodeBlockUtils::check_high_surrogate(unicode)) {
     type = CharType::SURROGATE_HIGH;
-  } else if (OB_FAIL(is_surrogate_low<CS_TYPE>(input, char_len, checker))) {
-  } else if (checker) {
+  } else if (ObUnicodeBlockUtils::check_low_surrogate(unicode)) {
     type = CharType::SURROGATE_LOW;
   }
   return ret;

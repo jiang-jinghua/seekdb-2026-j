@@ -145,7 +145,7 @@ private:
   // long-lived allocator for the pinned, shared IK dictionaries
   ObArenaAllocator dict_alloc_;
   // protects the pinned dict slots below
-  ObRWLock ik_dict_lock_;
+  obsys::ObRWLock ik_dict_lock_;
   ObIFTDict *ik_range_dicts_[K_IK_DICT_SLOT_CNT];
   ObFTCacheRangeContainer *ik_range_containers_[K_IK_DICT_SLOT_CNT];
 };

@@ -159,7 +159,7 @@ int ObFTDictHub::get_or_build_range_dict(const ObFTDictDesc &desc, ObIFTDict *&d
     // fast path: the dict has already been built and pinned
     bool done = false;
     {
-      ObRLockGuard guard(ik_dict_lock_);
+      obsys::ObRLockGuard guard(ik_dict_lock_);
       if (OB_NOT_NULL(ik_range_dicts_[slot])) {
         dict = ik_range_dicts_[slot];
         done = true;
@@ -169,7 +169,7 @@ int ObFTDictHub::get_or_build_range_dict(const ObFTDictDesc &desc, ObIFTDict *&d
       // slow path: build once under the write lock and pin it forever.
       // Built-in IK dictionaries never change at runtime, and their DAT
       // blocks live in the KVCache whose handles we keep referenced here.
-      ObWLockGuard guard(ik_dict_lock_);
+      obsys::ObWLockGuard guard(ik_dict_lock_);
       if (OB_NOT_NULL(ik_range_dicts_[slot])) {
         dict = ik_range_dicts_[slot];
       } else {

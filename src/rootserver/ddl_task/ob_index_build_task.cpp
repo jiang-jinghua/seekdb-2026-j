@@ -100,6 +100,48 @@ int ObIndexSSTableBuildTask::process()
         }
       }
     #endif
+    // For a fulltext doc_word aux table, derive its content from the already
+    // built fulltext inverted-index aux table instead of scanning and
+    // re-tokenizing the source table: both aux tables carry identical
+    // (word, doc_id, word_count, doc_length) rows under identical column
+    // names, so a plain SELECT from the inverted index produces the same rows
+    // while avoiding a second tokenization pass over the whole source table.
+    const ObTableSchema *build_source_schema = data_schema;
+    uint64_t build_source_table_id = data_table_id_;
+    if (OB_SUCC(ret) && index_schema->is_fts_doc_word_aux()) {
+      static const char *FTS_DOC_WORD_SUFFIX = "_fts_doc_word";
+      const int64_t suffix_len = static_cast<int64_t>(strlen(FTS_DOC_WORD_SUFFIX));
+      const ObString &dest_name = index_schema->get_table_name_str();
+      if (dest_name.length() > suffix_len
+          && 0 == memcmp(dest_name.ptr() + dest_name.length() - suffix_len,
+                         FTS_DOC_WORD_SUFFIX,
+                         suffix_len)) {
+        const ObString inv_index_name(dest_name.length() - suffix_len, dest_name.ptr());
+        const ObTableSchema *inv_schema = nullptr;
+        if (OB_FAIL(schema_guard.get_table_schema(index_schema->get_database_id(),
+                                                  inv_index_name,
+                                                  true/*is_index*/,
+                                                  inv_schema,
+                                                  true/*with_hidden_flag*/))) {
+          if (OB_TABLE_NOT_EXIST == ret || OB_ENTRY_NOT_EXIST == ret) {
+            // inverted-index aux not found: fall back to the legacy
+            // source-table scan (tokenizing) path
+            ret = OB_SUCCESS;
+            LOG_WARN("fts inverted-index aux not found for doc_word build,"
+                     " falling back to source-table scan",
+                     K(dest_table_id_), K(inv_index_name), K(ret));
+          }
+        } else if (OB_NOT_NULL(inv_schema) && inv_schema->is_fts_index_aux()) {
+          build_source_schema = inv_schema;
+          build_source_table_id = inv_schema->get_table_id();
+          LOG_INFO("fts doc_word build derives rows from inverted-index aux",
+                   K(build_source_table_id), K(data_table_id_), K(dest_table_id_));
+        } else {
+          // found table is not an fts index aux: keep the legacy path
+        }
+      }
+    }
+
     if (OB_FAIL(ret)) {
     } else if (is_partitioned_local_index_task()) {
       if (OB_FAIL(ObDDLUtil::get_index_table_batch_partition_names(
@@ -111,19 +153,19 @@ int ObIndexSSTableBuildTask::process()
     }
 
     if (OB_SUCC(ret)) {
-      if (OB_FAIL(ObDDLTaskUtil::generate_build_replica_sql(data_table_id_,
+      if (OB_FAIL(ObDDLTaskUtil::generate_build_replica_sql(build_source_table_id,
                                                             dest_table_id_,
-                                                            data_schema->get_schema_version(),
+                                                            build_source_schema->get_schema_version(),
                                                             snapshot_version_,
                                                             execution_id_,
                                                             task_id_,
                                                             parallelism_,
                                                             false/*use_heap_table_ddl*/,
-                                                            !data_schema->is_user_hidden_table()/*use_schema_version_hint_for_src_table*/,
+                                                            !build_source_schema->is_user_hidden_table()/*use_schema_version_hint_for_src_table*/,
                                                             nullptr,
                                                             partition_names,
                                                             sql_string))) {
-      } else if (OB_FAIL(data_schema->is_need_padding_for_generated_column(need_padding))) {
+      } else if (OB_FAIL(build_source_schema->is_need_padding_for_generated_column(need_padding))) {
       } else {
         common::ObCommonSqlProxy *user_sql_proxy = nullptr;
         int64_t affected_rows = 0;
@@ -132,7 +174,7 @@ int ObIndexSSTableBuildTask::process()
         session_param.sql_mode_ = (int64_t *)&sql_mode;
         session_param.tz_info_wrap_ = nullptr;
         session_param.ddl_info_.set_is_ddl(true);
-        session_param.ddl_info_.set_source_table_hidden(data_schema->is_user_hidden_table());
+        session_param.ddl_info_.set_source_table_hidden(build_source_schema->is_user_hidden_table());
         session_param.ddl_info_.set_dest_table_hidden(index_schema->is_user_hidden_table());
         session_param.ddl_info_.set_retryable_ddl(is_retryable_ddl_);
         int tmp_ret = OB_SUCCESS;

@@ -68,6 +68,7 @@ ObFtsIndexBuildTask::ObFtsIndexBuildTask()
     dependent_task_result_map_(),
     is_retryable_ddl_(true),
     use_doc_id_(true),
+    fts_doc_word_deferred_(false),
     rowkey_doc_schema_version_(0),
     charset_type_(CHARSET_INVALID)
 {
@@ -388,7 +389,14 @@ int ObFtsIndexBuildTask::get_next_status(share::ObDDLTaskStatus &next_status)
         break;
       }
       case ObDDLTaskStatus::WAIT_AUX_TABLE_COMPLEMENT: {
-        next_status = ObDDLTaskStatus::TAKE_EFFECT;
+        if (is_fts_task() && !fts_doc_word_task_submitted_) {
+          // The doc_word build is deferred (see prepare_aux_index_tables):
+          // loop back and submit it now that the inverted-index aux
+          // complement is done, so it can be derived from the aux table.
+          next_status = ObDDLTaskStatus::GENERATE_DOC_AUX_SCHEMA;
+        } else {
+          next_status = ObDDLTaskStatus::TAKE_EFFECT;
+        }
         break;
       }
       case ObDDLTaskStatus::TAKE_EFFECT: {
@@ -467,7 +475,11 @@ int ObFtsIndexBuildTask::prepare_aux_table(
       } else if (OB_FAIL(construct_create_index_arg(index_type, index_arg))) {
       } else if (OB_FAIL(arg.create_index_arg_.assign(index_arg))) {
         ret = OB_ERR_UNEXPECTED;
-      } else if (OB_FALSE_IT(arg.snapshot_version_ = snapshot_version_)) {
+      } else if (OB_FALSE_IT(arg.snapshot_version_ =
+                  share::schema::is_fts_doc_word_aux(index_type)
+                  ? 0  // doc_word is derived from the built aux table; take a
+                       // fresh snapshot after the aux complement is done
+                  : snapshot_version_)) {
       } else if (OB_FAIL(rootserver::local_ddl_serial_call([&]{ return ::oceanbase::share::server_service<::oceanbase::rootserver::ObLocalManagementService>()->create_aux_index(arg, res); }))) {
       } else if (res.schema_generated_) {
         task_submitted = true;
@@ -552,7 +564,7 @@ int ObFtsIndexBuildTask::prepare_aux_index_tables()
   } else if (ObDDLTaskStatus::GENERATE_DOC_AUX_SCHEMA != task_status_) {
     ret = OB_STATE_NOT_MATCH;
   } else if (is_fts_task() && OB_FAIL(ObFtsIndexBuilderUtil::check_need_to_load_dic(parser_name, need_to_load_dic))) {
-  } else if (need_to_load_dic) {
+  } else if (need_to_load_dic && !fts_doc_word_deferred_) {
     ObMySQLTransaction trans;
     if (OB_ISNULL(GCTX.sql_proxy_)) {
       ret = OB_ERR_UNEXPECTED;
@@ -613,6 +625,14 @@ int ObFtsIndexBuildTask::prepare_aux_index_tables()
                     domain_index_aux_task_id_))) {
      } else if (!is_fts_task()) {
        fts_doc_word_task_submitted_ = true;
+     } else if (!fts_doc_word_deferred_) {
+       // Defer the doc_word build until the inverted-index aux table has
+       // finished complementing. It is then derived directly from that aux
+       // table (see ObIndexSSTableBuildTask::process) instead of scanning and
+       // re-tokenizing the whole source table a second time.
+       // WAIT_AUX_TABLE_COMPLEMENT loops back to this state via
+       // get_next_status once the aux complement is done.
+       fts_doc_word_deferred_ = true;
      } else {
 #ifdef ERRSIM
       if (OB_SUCC(ret)) {
@@ -632,7 +652,8 @@ int ObFtsIndexBuildTask::prepare_aux_index_tables()
     }
   }
 
-  if (OB_SUCC(ret) && doc_rowkey_task_submitted_ && domain_index_aux_task_submitted_ && fts_doc_word_task_submitted_) {
+  if (OB_SUCC(ret) && doc_rowkey_task_submitted_ && domain_index_aux_task_submitted_
+      && (fts_doc_word_task_submitted_ || fts_doc_word_deferred_)) {
     state_finished = true;
   }
   if (state_finished || OB_FAIL(ret)) {

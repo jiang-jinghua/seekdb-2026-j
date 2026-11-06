@@ -223,6 +223,11 @@ private:
   common::hash::ObHashMap<uint64_t, rootserver::ObDomainDependTaskStatus> dependent_task_result_map_;
   bool is_retryable_ddl_;
   bool use_doc_id_;
+  // set on the first pass of GENERATE_DOC_AUX_SCHEMA when the doc_word build
+  // is deferred until the inverted-index aux complement is done; the doc_word
+  // table is then derived from the aux table instead of re-tokenizing the
+  // source table (see prepare_aux_index_tables / ObIndexSSTableBuildTask)
+  bool fts_doc_word_deferred_;
   int64_t rowkey_doc_schema_version_;
   ObCharsetType charset_type_;
 };

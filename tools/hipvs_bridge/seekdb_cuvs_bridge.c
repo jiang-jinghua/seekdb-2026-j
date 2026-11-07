@@ -33,9 +33,13 @@ void* seekdb_cuvs_build(const float* base, long n, long dim)
 
   if (cuvsCagraIndexParamsCreate(&h->ip) != CUVS_SUCCESS) goto fail_res;
   h->ip->build_algo = NN_DESCENT;
-  h->ip->graph_degree = 128;
-  h->ip->intermediate_graph_degree = 256;
-  h->ip->nn_descent_niter = 100;
+  /* Tune-2: halve graph size and descent iterations. 128/256/100 built a
+   * denser graph than the recall gate needs, so build time was dominated by
+   * unnecessary NN-descent work. 64/128/50 is the cuVS sweet spot for
+   * L2/float32 workloads: ~2x less graph construction, small recall delta. */
+  h->ip->graph_degree = 64;
+  h->ip->intermediate_graph_degree = 128;
+  h->ip->nn_descent_niter = 50;
   if (cuvsCagraIndexCreate(&h->idx)      != CUVS_SUCCESS) goto fail_ip;
   if (cuvsCagraBuild(h->res, h->ip, &dset, h->idx) != CUVS_SUCCESS) goto fail_idx;
   h->n = n; h->dim = dim;

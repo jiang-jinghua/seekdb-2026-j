@@ -250,7 +250,13 @@ int ObBasicEnglishNormalizer::get_next(ObDatum &next_token, int64_t &token_freq)
   } else {
     next_token.reset();
     token_freq = 0;
-    norm_allocator_.reuse();
+    // Do NOT reset norm_allocator_ per token: the lowered token buffers are
+    // bump-allocated and stay valid for the whole document. The arena is
+    // reclaimed once per document via reuse() (called by the analyzer before
+    // each analyze()), and per-token buffers are only consumed within the
+    // document scope (word map is per-document). This turns the per-token
+    // tolower allocation into a cheap bump allocation and lets downstream
+    // readers reference the tokens without copying.
     ObDatum tmp_datum;
     bool found_alnum = false;
     uint32_t norm_token_len = 0;

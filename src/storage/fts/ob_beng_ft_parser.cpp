@@ -35,7 +35,6 @@ int ObBEngFTParser::get_next_token(
   int ret = OB_SUCCESS;
   ObDatum token;
   int64_t token_freq = 0;
-  char *buf = nullptr;
   word = nullptr;
   word_len = 0;
   char_len = 0;
@@ -49,11 +48,14 @@ int ObBEngFTParser::get_next_token(
     }
   } else if (OB_ISNULL(token.ptr_) || OB_UNLIKELY(0 >= token.len_ || 0 >= token_freq)) {
     ret = OB_INVALID_ARGUMENT;
-  } else if (OB_ISNULL(buf = static_cast<char *>(allocator_.alloc(token.len_)))) {
-    ret = OB_ALLOCATE_MEMORY_FAILED;
   } else {
-    MEMCPY(buf, token.ptr_, token.len_);
-    word = buf;
+    // Zero-copy: the token bytes live in the normalizer's document-scoped
+    // arena (ObBasicEnglishNormalizer no longer recycles its buffer per
+    // token), so they stay valid for the lifetime of the document. All
+    // consumers (per-document word map, datum rows built in the same scope)
+    // copy whatever they retain, so the extra per-token alloc+memcpy here is
+    // pure overhead.
+    word = token.ptr_;
     word_len = token.len_;
     char_len = token.len_;
     word_freq = token_freq;

@@ -384,7 +384,7 @@ int ObFTRangeDict::find_first_char_range(const ObString &single_word, ObIFTDict 
   int ret = OB_SUCCESS;
   bool found = false;
   int64_t first = 0;
-  int64_t end = range_dicts_.size();
+  int64_t end = range_dicts_.count();
   if (ranges_ordered_) {
     // Choose the first inclusive upper bound. This also preserves the old
     // first-match rule if adjacent ranges share an endpoint.
@@ -397,7 +397,7 @@ int ObFTRangeDict::find_first_char_range(const ObString &single_word, ObIFTDict 
         end = mid;
       }
     }
-    end = std::min(first + 1, static_cast<int64_t>(range_dicts_.size()));
+    end = std::min(first + 1, static_cast<int64_t>(range_dicts_.count()));
   }
   for (int64_t i = first; OB_SUCC(ret) && !found && i < end; ++i) {
     if (ObCharset::strcmp(ObCollationType::CS_TYPE_UTF8MB4_BIN,
@@ -435,13 +435,14 @@ int ObFTRangeDict::build_dict_from_cache(const ObFTCacheRangeContainer &range_co
       range.start_ = dat->start_word_;
       range.end_ = dat->end_word_;
       range.dict_ = dict;
-      if (range_dicts_.size() > 0) {
-        const auto &previous = range_dicts_[range_dicts_.size() - 1];
+      if (range_dicts_.count() > 0) {
+        const auto &previous = range_dicts_[range_dicts_.count() - 1];
         ranges_ordered_ = ranges_ordered_
             && ObCharset::strcmp(CS_TYPE_UTF8MB4_BIN, previous.start_.get_word(), range.start_.get_word()) <= 0
             && ObCharset::strcmp(CS_TYPE_UTF8MB4_BIN, previous.end_.get_word(), range.end_.get_word()) <= 0;
       }
       if (OB_FAIL(range_dicts_.push_back(range))) {
+        OB_DELETEx(ObFTCacheDict, &range_alloc_, dict);
       }
     }
   }

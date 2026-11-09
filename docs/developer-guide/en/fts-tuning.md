@@ -170,3 +170,19 @@ The internal fulltext document-id column is distinct from the user primary key
 `id`. This extension only admits the former. It therefore does not remove BM25
 from the benchmark's primary-key LIMIT query. Other column references retain
 the conservative scored lookup path. No official score improvement is claimed.
+
+## Caller-owned dictionary wrappers (2026-11-09)
+
+Each IK invocation previously created three arena allocators for short-lived
+range dictionary wrappers. Allocate these wrappers from the parser's existing
+allocator and store the first eight range descriptors inline, with dynamic
+fallback for larger dictionaries. Explicit destruction frees each wrapper;
+cache handles continue to own the DAT blocks. A failed descriptor insertion
+also frees its newly allocated wrapper. Matching and range selection are
+unchanged.
+
+The release build and all 17 native fts_index regression cases passed. One
+complete unchanged benchmark retained all four hit counts. IK tokenization
+changed from 0.0531 to 0.0510 ms, while construction was effectively unchanged
+(2.841/2.141/1.254 versus 2.843/2.141/1.254 seconds). Other timings varied; a
+single run is not evidence of a stable official score improvement.

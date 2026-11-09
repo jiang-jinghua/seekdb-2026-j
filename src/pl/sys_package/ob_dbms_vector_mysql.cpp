@@ -823,32 +823,34 @@ int ObDBMSVectorMySql::batch_knn(ObPLExecCtx &ctx, sql::ParamStore &params, comm
           } else if (OB_FAIL(GCTX.sql_proxy_->write(del.ptr(), 0, affected))) {
             LOG_WARN("batch_knn: clear out_table failed (create it first)", K(ret), K(del));
           }
-          // One statement carries 2x the rows it used to: every write() is a
-          // full SQL round trip with its own transaction, and nq*topk result
-          // rows at 400 per statement meant a large number of tiny commits
-          // inside the query window. 800 rows is ~26KB of SQL text (~35KB with
-          // wide ids/distances), still safely below OB_MAX_SQL_LENGTH (64KB).
-          const long CHUNK = 800;
-          long q = 0;
-          while (OB_SUCC(ret) && q < nq) {
+          // Bound SQL bytes rather than probe count: wide IDs and distances
+          // must fit too, and one probe may span multiple INSERT statements.
+          const int64_t MAX_INSERT_BYTES = 48 * 1024;
+          const size_t total_results = off.size();
+          size_t cursor = 0;
+          while (OB_SUCC(ret) && cursor < total_results) {
             common::ObSqlString ins;
             if (OB_FAIL(ins.assign_fmt("INSERT INTO `%.*s`.`%.*s`(probe_id,neighbor_id,distance,rk) VALUES ",
                            db.length(), db.ptr(), out_table.length(), out_table.ptr()))) {
               break;
             }
-            long rows_in_stmt = 0;
-            for (; OB_SUCC(ret) && q < nq && rows_in_stmt < CHUNK; ++q) {
-              for (long i = 0; OB_SUCC(ret) && i < topk; ++i) {
-                const size_t pidx = static_cast<size_t>(q) * topk + i;
-                const unsigned o = off[pidx];
-                const int64_t nid = (o < base_ids->size()) ? (*base_ids)[o] : -1;
-                if (OB_FAIL(ins.append_fmt("%s(%ld,%ld,%.6f,%ld)",
-                               (rows_in_stmt > 0) ? "," : "",
-                               static_cast<long>((*probe_ids)[q]), static_cast<long>(nid),
-                               dist[pidx], static_cast<long>(i)))) {
-                } else {
-                  rows_in_stmt++;
-                }
+            int64_t rows_in_stmt = 0;
+            while (OB_SUCC(ret) && cursor < total_results) {
+              const size_t q = cursor / static_cast<size_t>(topk);
+              const size_t rank = cursor % static_cast<size_t>(topk);
+              const unsigned o = off[cursor];
+              const int64_t nid = (o < base_ids->size()) ? (*base_ids)[o] : -1;
+              common::ObSqlString row;
+              if (OB_FAIL(row.assign_fmt("%s(%ld,%ld,%.6f,%ld)",
+                             rows_in_stmt > 0 ? "," : "",
+                             static_cast<long>((*probe_ids)[q]), static_cast<long>(nid),
+                             dist[cursor], static_cast<long>(rank)))) {
+              } else if (rows_in_stmt > 0 && ins.length() + row.length() > MAX_INSERT_BYTES) {
+                break;
+              } else if (OB_FAIL(ins.append(row.ptr(), row.length()))) {
+              } else {
+                ++rows_in_stmt;
+                ++cursor;
               }
             }
             if (OB_SUCC(ret) && OB_FAIL(GCTX.sql_proxy_->write(ins.ptr(), 0, affected))) {

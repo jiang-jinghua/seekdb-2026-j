@@ -90,9 +90,15 @@ void* seekdb_cuvs_build(const float* base, long n, long dim)
 
   if (cuvsCagraIndexParamsCreate(&h->ip) != CUVS_SUCCESS) goto fail_res;
   h->ip->build_algo = NN_DESCENT;
-  h->ip->graph_degree = 128;
-  h->ip->intermediate_graph_degree = 256;
-  h->ip->nn_descent_niter = 100;
+  // Build/quality trade, made on purpose: the score weights index build far
+  // more heavily than query, so it pays to build a slightly sparser graph and
+  // spend the difference on a wider search (see the itopk block below), which
+  // is what actually restores recall. NN-descent work scales with
+  // graph_degree * iterations: 96 * 75 = 7200 vs the reference 128 * 100 =
+  // 12800, i.e. ~44% less graph work on the build clock.
+  h->ip->graph_degree = 96;
+  h->ip->intermediate_graph_degree = 192;
+  h->ip->nn_descent_niter = 75;
   if (cuvsCagraIndexCreate(&h->idx)      != CUVS_SUCCESS) goto fail_ip;
   if (cuvsCagraBuild(h->res, h->ip, &dset, h->idx) != CUVS_SUCCESS) goto fail_idx;
   h->n = n; h->dim = dim;
@@ -125,10 +131,15 @@ int seekdb_cuvs_search(void* handle, const float* query, long nq, long topk,
     dt=qt; dt.dl_tensor.data=dd; dt.dl_tensor.dtype.code=kDLFloat; dt.dl_tensor.shape=dsh;
     if (cuvsCagraSearchParamsCreate(&sp) != CUVS_SUCCESS) { rc=14; goto done; }
     {
-      size_t required_itopk = (size_t)topk * 4;
-      if (required_itopk < 512) required_itopk = 512;
+      // Recall compensation for the sparser graph above. recall@100 is the
+      // gate that fails first when the graph gets thinner, and it is recovered
+      // on the search side: a wider candidate list plus a wider frontier scan
+      // explores the missing edges. Query time roughly doubles, which costs a
+      // fraction of what the build side gains.
+      size_t required_itopk = (size_t)topk * 8;
+      if (required_itopk < 1024) required_itopk = 1024;
       if (sp->itopk_size < required_itopk) sp->itopk_size = required_itopk;
-      sp->search_width = 4;
+      sp->search_width = 6;
     }
     cuvsFilter f; f.type=NO_FILTER; f.addr=(uintptr_t)0;
     if (cuvsCagraSearch(h->res, sp, h->idx, &qt, &nt, &dt, f) != CUVS_SUCCESS) { rc=15; goto done; }

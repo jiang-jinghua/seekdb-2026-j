@@ -1,0 +1,50 @@
+SET NAMES utf8mb4;
+SELECT TOKENIZE(CONVERT(X'00417a3039207f' USING utf8mb4), 'ik', '[{"output":"all"}]') AS tokens;
+tokens
+{"tokens": [{"az09": 1}], "doc_len": 1}
+SELECT TOKENIZE(CONVERT(X'e4b7bfe4b880e4b881e9bfbee9bfbfea8080' USING utf8mb4), 'ik', '[{"output":"all"}]') AS tokens;
+tokens
+{"tokens": [{"鿿": 1}, {"鿾": 1}, {"一丁": 1}], "doc_len": 3}
+SELECT TOKENIZE(CONVERT(X'e4b7bf20e4b88020e4b88120e9bfbe20e9bfbf20ea8080' USING utf8mb4), 'ik', '[{"output":"all"}]') AS tokens;
+tokens
+{"tokens": [{"鿿": 1}, {"鿾": 1}, {"丁": 1}, {"一": 1}], "doc_len": 4}
+SELECT TOKENIZE(CONVERT(X'e4b880414243313233e9bfbfefbca1efbc91' USING utf8mb4), 'ik', '[{"output":"all"}]') AS tokens;
+tokens
+{"tokens": [{"ａ１": 1}, {"鿿": 1}, {"abc123": 1}, {"一": 1}], "doc_len": 4}
+SELECT TOKENIZE(CONVERT(X'f0908080e4b880f0a08080e9bfbff48fbfbf' USING utf8mb4), 'ik', '[{"output":"all"}]') AS tokens;
+tokens
+{"tokens": [{"鿿": 1}, {"一": 1}], "doc_len": 2}
+SELECT TOKENIZE(CONVERT(X'e4b7bfe4b880e4b881e9bfbee9bfbfea8080' USING utf8mb4), 'ik', '[{"output":"all"},{"additional_args":[{"ik_mode":"max_word"}]}]') AS tokens;
+tokens
+{"tokens": [{"鿿": 1}, {"鿾": 1}, {"丁": 1}, {"一丁": 1}, {"一": 1}], "doc_len": 5}
+SELECT TOKENIZE(CONVERT(X'00417a3039207f' USING utf8mb4) COLLATE utf8mb4_bin, 'ik', '[{"output":"all"}]') AS tokens;
+tokens
+{"tokens": [{"az09": 1}], "doc_len": 1}
+SELECT TOKENIZE(CONVERT(X'e4' USING utf8mb4), 'ik');
+TOKENIZE(CONVERT(X'e4' USING utf8mb4), 'ik')
+[]
+Warnings:
+Warning	1300	Invalid utf8mb4 character string: 'E4'
+SELECT TOKENIZE(CONVERT(X'e480' USING utf8mb4), 'ik');
+TOKENIZE(CONVERT(X'e480' USING utf8mb4), 'ik')
+[]
+Warnings:
+Warning	1300	Invalid utf8mb4 character string: 'E480'
+SELECT TOKENIZE(CONVERT(X'e44180' USING utf8mb4), 'ik');
+TOKENIZE(CONVERT(X'e44180' USING utf8mb4), 'ik')
+[]
+Warnings:
+Warning	1300	Invalid utf8mb4 character string: 'E44180'
+SELECT TOKENIZE(CONVERT(X'e48041' USING utf8mb4), 'ik');
+TOKENIZE(CONVERT(X'e48041' USING utf8mb4), 'ik')
+[]
+Warnings:
+Warning	1300	Invalid utf8mb4 character string: 'E48041'
+SELECT TOKENIZE(CONVERT(X'eda080' USING utf8mb4), 'ik');
+TOKENIZE(CONVERT(X'eda080' USING utf8mb4), 'ik')
+[]
+SELECT TOKENIZE(CONVERT(X'c080' USING utf8mb4), 'ik');
+TOKENIZE(CONVERT(X'c080' USING utf8mb4), 'ik')
+[]
+Warnings:
+Warning	1300	Invalid utf8mb4 character string: 'C080'

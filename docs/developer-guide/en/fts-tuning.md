@@ -186,3 +186,44 @@ complete unchanged benchmark retained all four hit counts. IK tokenization
 changed from 0.0531 to 0.0510 ms, while construction was effectively unchanged
 (2.841/2.141/1.254 versus 2.843/2.141/1.254 seconds). Other timings varied; a
 single run is not evidence of a stable official score improvement.
+
+## UTF-8 character scanning (2026-11-09)
+
+Temporary phase timing on the private test instance identified character
+scanning as a larger IK cost than arbitration and result emission. Those timing
+probes are not part of the implementation or the performance measurements.
+
+TokenizeContext now records whether its input charset is UTF-8. ASCII and
+well-formed three-byte encodings in U+4E00..U+9FFF determine their byte length
+and existing category directly. This avoids validating and decoding those
+characters twice. Every other code point, incomplete sequence, invalid
+continuation byte and other charset uses the original path. The character
+ranges and category precedence are unchanged.
+
+Compared with an exact rebuild of 853198bf5 on the same private instance, using
+the unchanged full benchmark configuration, IK tokenization was:
+
+| Run | Baseline (ms) | Candidate (ms) |
+| --- | ---: | ---: |
+| 1 | 0.0518 | 0.0509 |
+| 2 | 0.0528 | 0.0483 |
+| Mean | 0.0523 | 0.0496 |
+
+This is about a 5.2% reduction in this local metric. Index construction did not
+show a clear improvement, and an official score improvement is not established.
+The two candidate runs preceded the two baseline runs; this is not a randomized
+comparison. Shared-host effects and run-to-run noise remain limitations.
+
+Raw reports: [baseline 1](fts-tuning-results/fts-char-before1.txt),
+[baseline 2](fts-tuning-results/fts-char-before2.txt),
+[candidate 1](fts-tuning-results/fts-char-after1.txt),
+[candidate 2](fts-tuning-results/fts-char-after2.txt).
+
+Validation: release build, 17 existing fts_index cases, the new ik_utf8_scan
+case, and byte-identical output for the existing 374-query Unicode corpus.
+The new case covers ASCII/NUL, both edges of the fast CJK range, fullwidth
+characters, supplementary-plane characters, both IK modes, and SQL conversion
+of malformed byte sequences. Its expected output was captured with the old
+executable and then checked against the candidate. Conversion can sanitize
+malformed SQL input, so this is not exhaustive decoder-level malformed-input
+coverage. All four benchmark hit counts stayed at 8001/11000/7332/20.

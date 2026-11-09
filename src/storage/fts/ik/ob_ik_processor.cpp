@@ -51,7 +51,7 @@ TokenizeContext::TokenizeContext(ObCollationType coll_type,
                                  const char *fulltext,
                                  int64_t fulltext_len,
                                  bool is_smart)
-    : coll_type_(coll_type), fulltext_(fulltext), fulltext_len_(fulltext_len), cursor_(0),
+    : coll_type_(coll_type), is_utf8_(ObCharset::charset_type_by_coll(coll_type) == CHARSET_UTF8MB4), fulltext_(fulltext), fulltext_len_(fulltext_len), cursor_(0),
       next_char_len_(0), handle_size_(0), is_smart_(is_smart), token_list_(allocator),
       result_list_(allocator)
 {
@@ -102,7 +102,33 @@ int TokenizeContext::current_char_type(ObFTCharUtil::CharType &type)
 int TokenizeContext::prepare_next_char()
 {
   int ret = OB_SUCCESS;
-  if (OB_FAIL(ObCharset::first_valid_char(coll_type_,
+  const unsigned char *ch = reinterpret_cast<const unsigned char *>(fulltext_ + cursor_);
+  const int64_t remaining = fulltext_len_ - cursor_;
+  bool classified = false;
+  if (is_utf8_ && remaining > 0) {
+    if (ch[0] < 0x80) {
+      next_char_len_ = 1;
+      next_char_type_ = ((ch[0] >= 'A' && ch[0] <= 'Z') || (ch[0] >= 'a' && ch[0] <= 'z'))
+          ? ObFTCharUtil::CharType::ENGLISH_LETTER
+          : ((ch[0] >= '0' && ch[0] <= '9') ? ObFTCharUtil::CharType::ARABIC_LETTER
+                                           : ObFTCharUtil::CharType::USELESS);
+      classified = true;
+    } else if (remaining >= 3 && ch[0] >= 0xE4 && ch[0] <= 0xE9
+               && (ch[1] & 0xC0) == 0x80 && (ch[2] & 0xC0) == 0x80) {
+      const uint32_t codepoint = ((ch[0] & 0x0F) << 12) | ((ch[1] & 0x3F) << 6) | (ch[2] & 0x3F);
+      // This subset is unambiguously valid UTF-8 and belongs to the exact
+      // U+4E00..U+9FFF block recognized by is_chinese(). All other bytes use
+      // the existing validation and classification, including malformed input.
+      if (codepoint >= 0x4E00 && codepoint <= 0x9FFF) {
+        next_char_len_ = 3;
+        next_char_type_ = ObFTCharUtil::CharType::CHINESE;
+        classified = true;
+      }
+    }
+  }
+  if (classified) {
+    // Both length and category are already known.
+  } else if (OB_FAIL(ObCharset::first_valid_char(coll_type_,
                                           fulltext_ + cursor_,
                                           fulltext_len_ - cursor_,
                                           next_char_len_))) {

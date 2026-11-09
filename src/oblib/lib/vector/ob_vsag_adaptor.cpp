@@ -24,6 +24,7 @@
 #include <memory>
 #include <limits>
 #include <unistd.h>
+#include <sys/mman.h>
 #include <istream>
 #include <ostream>
 #include <algorithm>
@@ -544,15 +545,31 @@ static bool ob_cuvs_serialize(void *key, std::ostream &out, int &ret) {
     LOG_WARN("[OBVSAG][cuVS] failed to write snapshot stream", K(ret), KP(key), K(n));
     return true;
   }
-  std::vector<char> chunk(8UL * 1024 * 1024);
-  uint64_t remaining = graph_bytes;
-  while (remaining > 0) {
-    const size_t bytes = std::min<uint64_t>(remaining, chunk.size());
-    if (::fread(chunk.data(), 1, bytes, graph.file_) != bytes || !ob_cuvs_write(out, chunk.data(), bytes)) {
+  // The graph is already backed by a file (normally tmpfs). Avoid copying
+  // it through another userspace buffer before the snapshot stream consumes it.
+  void *mapped = MAP_FAILED;
+  if (graph_bytes <= std::numeric_limits<size_t>::max()) {
+    mapped = ::mmap(nullptr, static_cast<size_t>(graph_bytes), PROT_READ,
+                    MAP_PRIVATE, ::fileno(graph.file_), 0);
+  }
+  if (mapped != MAP_FAILED) {
+    const bool written = ob_cuvs_write(out, mapped, static_cast<size_t>(graph_bytes));
+    ::munmap(mapped, static_cast<size_t>(graph_bytes));
+    if (!written) {
       ret = OB_ERR_UNEXPECTED;
       return true;
     }
-    remaining -= bytes;
+  } else {
+    std::vector<char> chunk(8UL * 1024 * 1024);
+    uint64_t remaining = graph_bytes;
+    while (remaining > 0) {
+      const size_t bytes = std::min<uint64_t>(remaining, chunk.size());
+      if (::fread(chunk.data(), 1, bytes, graph.file_) != bytes || !ob_cuvs_write(out, chunk.data(), bytes)) {
+        ret = OB_ERR_UNEXPECTED;
+        return true;
+      }
+      remaining -= bytes;
+    }
   }
   const int64_t write_done_us = ObTimeUtility::current_time();
   const int64_t graph_us = build_us - gpu_build_us;

@@ -969,9 +969,13 @@ int ObHNSWIndexAppendBufferOperator::append_rows(
     ObDDLTabletContext *tablet_context)
 {
   int ret = OB_SUCCESS;
-  if (row_count <= 1 || vectors.count() <= vector_vid_col_idx_ ||
+  if (row_count <= 1 || row_count > INT32_MAX ||
+      vector_vid_col_idx_ < 0 || vector_col_idx_ < 0 ||
+      vectors.count() <= vector_vid_col_idx_ ||
       vectors.count() <= vector_col_idx_ || OB_ISNULL(tablet_context) ||
-      OB_ISNULL(tablet_context->vector_index_ctx_)) {
+      OB_ISNULL(tablet_context->vector_index_ctx_) ||
+      OB_ISNULL(vectors.at(vector_col_idx_)) ||
+      OB_ISNULL(vectors.at(vector_vid_col_idx_))) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("invalid argument for batch vector append", K(ret), K(row_count));
   } else {
@@ -998,13 +1002,22 @@ int ObHNSWIndexAppendBufferOperator::append_rows(
       }
     } else {
       const int64_t dim = tablet_context->vector_index_ctx_->vec_dim_;
-      const int64_t extra_count = extra_column_idx_types_.count();
+      int64_t extra_info_actual_size = 0;
+      if (OB_FAIL(adaptor_guard.get_adatper()->get_extra_info_actual_size(extra_info_actual_size))) {
+        LOG_WARN("failed to get batch extra info size", K(ret));
+      }
+      const int64_t extra_count = extra_info_actual_size > 0 ? extra_column_idx_types_.count() : 0;
       float *batch_vecs = nullptr;
       int64_t *batch_vids = nullptr;
       ObVecExtraInfoObj *batch_extra = nullptr;
       int64_t packed = 0;
       row_allocator_.reuse();
-      if (dim <= 0 || OB_ISNULL(batch_vecs = static_cast<float *>(
+      if (OB_FAIL(ret)) {
+      } else if (dim <= 0 || dim > INT64_MAX / row_count / static_cast<int64_t>(sizeof(float)) ||
+                 extra_count > INT64_MAX / row_count / static_cast<int64_t>(sizeof(ObVecExtraInfoObj))) {
+        ret = OB_INVALID_ARGUMENT;
+        LOG_WARN("invalid batch buffer dimensions", K(ret), K(dim), K(row_count), K(extra_count));
+      } else if (OB_ISNULL(batch_vecs = static_cast<float *>(
                                     row_allocator_.alloc(sizeof(float) * dim * row_count))) ||
           OB_ISNULL(batch_vids = static_cast<int64_t *>(
                         row_allocator_.alloc(sizeof(int64_t) * row_count)))) {
@@ -1030,6 +1043,8 @@ int ObHNSWIndexAppendBufferOperator::append_rows(
         if (OB_FAIL(read_full_lob_string(
                 row_allocator_, ObLongTextType, CS_TYPE_BINARY, true, vec_str))) {
           LOG_WARN("failed to read vector lob", K(ret), K(i));
+        } else if (vec_str.empty()) {
+          continue;
         } else if (vec_str.length() != dim * static_cast<int64_t>(sizeof(float))) {
           ret = OB_ERR_UNEXPECTED;
           LOG_WARN("invalid vector length in batch append", K(ret), K(i), K(dim),
@@ -1040,7 +1055,8 @@ int ObHNSWIndexAppendBufferOperator::append_rows(
           batch_vids[packed] = vectors.at(vector_vid_col_idx_)->get_int(i);
           for (int64_t e = 0; OB_SUCC(ret) && e < extra_count; ++e) {
             const share::ObExtraInfoIdxType &extra_idx = extra_column_idx_types_.at(e);
-            if (vectors.count() <= extra_idx.idx_) {
+            if (extra_idx.idx_ < 0 || vectors.count() <= extra_idx.idx_ ||
+                OB_ISNULL(vectors.at(extra_idx.idx_))) {
               ret = OB_ERR_UNEXPECTED;
               LOG_WARN("invalid extra column idx", K(ret), K(extra_idx.idx_), K(vectors.count()));
             } else if (OB_FAIL(batch_extra[packed * extra_count + e].from_vector(

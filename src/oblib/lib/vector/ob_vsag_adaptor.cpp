@@ -332,9 +332,26 @@ static bool ob_cuvs_try_search(void *key, vsag::Allocator *alloc,
 
 static const char OB_CUVS_SNAPSHOT_MAGIC[8] = {'O', 'B', 'C', 'U', 'V', 'S', '0', '2'};
 struct ObCuvsSnapshotFile {
-  FILE *file_ = ::tmpfile();
+  FILE *file_ = nullptr;
   char path_[64] = {};
   ObCuvsSnapshotFile() {
+    // The CAGRA graph blob is 64-128MB and is written, then read back, entirely
+    // inside the index build. tmpfile() normally lands on the container's
+    // overlay filesystem, so that is two full disk passes while the build is on
+    // the clock. Prefer a RAM-backed file; fall back to tmpfile() when /dev/shm
+    // is unavailable. The bytes handed to cuVS are identical either way.
+    char tmpl[] = "/dev/shm/obcuvs_XXXXXX";
+    const int fd = ::mkstemp(tmpl);
+    if (fd >= 0) {
+      file_ = ::fdopen(fd, "w+b");
+      if (file_ == nullptr) {
+        ::close(fd);
+      }
+      ::unlink(tmpl);  // keep only the /proc/self/fd handle, like tmpfile()
+    }
+    if (file_ == nullptr) {
+      file_ = ::tmpfile();
+    }
     if (file_ != nullptr) {
       ::snprintf(path_, sizeof(path_), "/proc/self/fd/%d", ::fileno(file_));
     }
@@ -442,7 +459,7 @@ static bool ob_cuvs_serialize(void *key, std::ostream &out, int &ret) {
     LOG_WARN("[OBVSAG][cuVS] failed to write snapshot stream", K(ret), KP(key), K(n));
     return true;
   }
-  std::vector<char> chunk(65536);
+  std::vector<char> chunk(8UL * 1024 * 1024);
   uint64_t remaining = graph_bytes;
   while (remaining > 0) {
     const size_t bytes = std::min<uint64_t>(remaining, chunk.size());
@@ -496,7 +513,7 @@ static int ob_cuvs_deserialize(void *key, int expected_dim, std::istream &in) {
       LOG_WARN("[OBVSAG][cuVS] truncated snapshot payload", K(ret), KP(key), K(n64));
     } else {
       ObCuvsSnapshotFile graph;
-      std::vector<char> chunk(65536);
+      std::vector<char> chunk(8UL * 1024 * 1024);
       uint64_t remaining = graph_bytes;
       while (graph.file_ != nullptr && remaining > 0) {
         const size_t bytes = std::min<uint64_t>(remaining, chunk.size());

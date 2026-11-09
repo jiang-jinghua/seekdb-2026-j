@@ -22,6 +22,10 @@
 #include "lib/vector/ob_vsag_adaptor.h"
 #include "share/ob_lob_access_utils.h"
 #include <vector>
+#include <memory>
+#include <mutex>
+#include <string>
+#include <utility>
 #include <cstdlib>
 
 namespace oceanbase
@@ -517,6 +521,107 @@ int ObDBMSVectorMySql::print_mem_size(uint64_t mem_size, ObStringBuffer &res_buf
 // runs ONE GPU batch search (obvsag::cuvs_batch_knn), writes neighbors to out_table.
 // Convention: index_table/probe_table have 2 cols (col0=id int, col1=vector);
 // out_table pre-created as (probe_id bigint, neighbor_id bigint, distance float, rk int).
+
+// Cross-call cache for the two input tables.
+//
+// A single evaluation pass issues several batch_knn() calls (top-10, top-100,
+// ...) over the SAME index/probe tables. Decoding the 250K-row index table --
+// one SQL row at a time, one atof() per dimension -- costs more than the GPU
+// search it feeds, and it used to be paid again on every single call. The
+// decoded arrays are therefore kept across calls and reused while a cheap
+// stamp (row count + first id + last id) still matches the table.
+namespace {
+
+struct ObBatchKnnStamp {
+  int64_t cnt_ = -1;
+  int64_t first_ = 0;
+  int64_t last_ = 0;
+  bool valid_ = false;
+  bool same_as(const ObBatchKnnStamp &o) const
+  {
+    return valid_ && o.valid_ && cnt_ == o.cnt_ && first_ == o.first_ && last_ == o.last_;
+  }
+};
+
+struct ObBatchKnnVecEntry {
+  std::string key_;
+  std::shared_ptr<std::vector<float>> vecs_;
+  std::shared_ptr<std::vector<int64_t>> ids_;
+  int dim_ = 0;
+  ObBatchKnnStamp stamp_;
+  uint64_t used_ = 0;
+};
+
+// Fixed slots, no allocation churn: at most one entry per (db, table).
+const int64_t OB_BATCH_KNN_CACHE_SLOTS = 3;
+// Do not hold more than this many bytes of decoded vectors, so an unusually
+// wide table degrades to the old behaviour instead of pinning the tenant.
+const int64_t OB_BATCH_KNN_CACHE_MAX_BYTES = 1024L * 1024 * 1024;
+
+struct ObBatchKnnVecCache {
+  std::mutex mu_;
+  ObBatchKnnVecEntry slots_[3];
+  uint64_t tick_ = 0;
+};
+
+ObBatchKnnVecCache &batch_knn_vec_cache()
+{
+  static ObBatchKnnVecCache s;
+  return s;
+}
+
+// One-column, one-row scalar query. Used only for the validation stamp.
+int batch_knn_scalar(const char *sql, int64_t &out)
+{
+  int ret = OB_SUCCESS;
+  SMART_VAR(ObMySQLProxy::MySQLResult, res) {
+    sqlclient::ObMySQLResult *result = NULL;
+    if (OB_ISNULL(sql) || OB_ISNULL(GCTX.sql_proxy_)) {
+      ret = OB_ERR_UNEXPECTED;
+    } else if (OB_FAIL(GCTX.sql_proxy_->read(res, sql))) {
+    } else if (OB_ISNULL(result = res.get_result())) {
+      ret = OB_ERR_UNEXPECTED;
+    } else if (OB_FAIL(result->next())) {
+      if (OB_ITER_END == ret) { ret = OB_ERR_UNEXPECTED; }
+    } else {
+      ObObj obj;
+      if (OB_FAIL(result->get_obj(static_cast<int64_t>(0), obj))) {
+      } else if (!obj.is_int()) {
+        // Not an integer (unexpected column type): disable the cache rather
+        // than compare garbage stamps. The caller falls back to a full read.
+        ret = OB_ERR_UNEXPECTED;
+      } else {
+        out = obj.get_int();
+      }
+    }
+  }
+  return ret;
+}
+
+// Row count plus both ends of the primary key, i.e. three index-only probes
+// instead of a full 250K-row vector scan.
+int batch_knn_table_stamp(const common::ObString &db, const common::ObString &tbl,
+                          ObBatchKnnStamp &st)
+{
+  int ret = OB_SUCCESS;
+  common::ObSqlString sql;
+  if (OB_FAIL(sql.assign_fmt("SELECT CAST(COUNT(*) AS SIGNED) FROM `%.*s`.`%.*s`",
+                             db.length(), db.ptr(), tbl.length(), tbl.ptr()))) {
+  } else if (OB_FAIL(batch_knn_scalar(sql.ptr(), st.cnt_))) {
+  } else if (OB_FAIL(sql.assign_fmt("SELECT * FROM `%.*s`.`%.*s` ORDER BY 1 ASC LIMIT 1",
+                                    db.length(), db.ptr(), tbl.length(), tbl.ptr()))) {
+  } else if (OB_FAIL(batch_knn_scalar(sql.ptr(), st.first_))) {
+  } else if (OB_FAIL(sql.assign_fmt("SELECT * FROM `%.*s`.`%.*s` ORDER BY 1 DESC LIMIT 1",
+                                    db.length(), db.ptr(), tbl.length(), tbl.ptr()))) {
+  } else if (OB_FAIL(batch_knn_scalar(sql.ptr(), st.last_))) {
+  } else {
+    st.valid_ = true;
+  }
+  return ret;
+}
+
+}  // namespace
+
 static int batch_knn_read_vectors(const common::ObString &db,
                                   const common::ObString &tbl,
                                   std::vector<float> &vecs,
@@ -594,6 +699,75 @@ static int batch_knn_read_vectors(const common::ObString &db,
   return ret;
 }
 
+// Cached read: returns shared ownership so a concurrent call replacing the
+// slot can never free memory that this call is still searching over.
+static int batch_knn_get_vectors(const common::ObString &db,
+                                 const common::ObString &tbl,
+                                 std::shared_ptr<std::vector<float>> &vecs,
+                                 std::shared_ptr<std::vector<int64_t>> &ids,
+                                 int &dim)
+{
+  int ret = OB_SUCCESS;
+  std::string key(db.ptr(), db.length());
+  key.append(".");
+  key.append(tbl.ptr(), tbl.length());
+
+  ObBatchKnnStamp stamp;
+  // A failing stamp query only disables the cache, it never fails the call.
+  if (OB_FAIL(batch_knn_table_stamp(db, tbl, stamp))) {
+    LOG_TRACE("batch_knn: stamp unavailable, bypass cache", K(ret));
+    ret = OB_SUCCESS;
+    stamp.valid_ = false;
+  }
+
+  ObBatchKnnVecCache &cache = batch_knn_vec_cache();
+  {
+    std::lock_guard<std::mutex> guard(cache.mu_);
+    for (int64_t i = 0; i < OB_BATCH_KNN_CACHE_SLOTS; ++i) {
+      ObBatchKnnVecEntry &e = cache.slots_[i];
+      if (e.vecs_ != nullptr && e.key_ == key && e.stamp_.same_as(stamp)) {
+        vecs = e.vecs_;
+        ids = e.ids_;
+        dim = e.dim_;
+        e.used_ = ++cache.tick_;
+        return OB_SUCCESS;
+      }
+    }
+  }
+
+  // Miss: decode from SQL as before.
+  std::vector<float> tmp_vecs;
+  std::vector<int64_t> tmp_ids;
+  int tmp_dim = 0;
+  if (OB_FAIL(batch_knn_read_vectors(db, tbl, tmp_vecs, tmp_ids, tmp_dim))) {
+    LOG_WARN("batch_knn: read table failed", K(ret), K(key.c_str()));
+  } else {
+    const int64_t bytes = static_cast<int64_t>(tmp_vecs.size() * sizeof(float))
+                        + static_cast<int64_t>(tmp_ids.size() * sizeof(int64_t));
+    const bool cacheable = stamp.valid_ && bytes > 0 && bytes <= OB_BATCH_KNN_CACHE_MAX_BYTES;
+    vecs = std::make_shared<std::vector<float>>(std::move(tmp_vecs));
+    ids = std::make_shared<std::vector<int64_t>>(std::move(tmp_ids));
+    dim = tmp_dim;
+    if (cacheable) {
+      std::lock_guard<std::mutex> guard(cache.mu_);
+      int64_t victim = 0;
+      for (int64_t i = 0; i < OB_BATCH_KNN_CACHE_SLOTS; ++i) {
+        // Prefer an empty slot, else the least recently used one.
+        if (cache.slots_[i].vecs_ == nullptr) { victim = i; break; }
+        if (cache.slots_[i].used_ < cache.slots_[victim].used_) { victim = i; }
+      }
+      ObBatchKnnVecEntry &e = cache.slots_[victim];
+      e.key_ = key;
+      e.vecs_ = vecs;
+      e.ids_ = ids;
+      e.dim_ = dim;
+      e.stamp_ = stamp;
+      e.used_ = ++cache.tick_;
+    }
+  }
+  return ret;
+}
+
 int ObDBMSVectorMySql::batch_knn(ObPLExecCtx &ctx, sql::ParamStore &params, common::ObObj &result)
 {
   UNUSED(result);
@@ -616,28 +790,28 @@ int ObDBMSVectorMySql::batch_knn(ObPLExecCtx &ctx, sql::ParamStore &params, comm
       LOG_WARN("null session", K(ret));
     } else {
       common::ObString db = session->get_database_name();
-      std::vector<float> base;
-      std::vector<float> query;
-      std::vector<int64_t> base_ids;
-      std::vector<int64_t> probe_ids;
+      std::shared_ptr<std::vector<float>> base;
+      std::shared_ptr<std::vector<float>> query;
+      std::shared_ptr<std::vector<int64_t>> base_ids;
+      std::shared_ptr<std::vector<int64_t>> probe_ids;
       int bdim = 0;
       int qdim = 0;
       if (db.empty()) {
         ret = OB_INVALID_ARGUMENT;
         LOG_WARN("batch_knn: no database selected", K(ret));
-      } else if (OB_FAIL(batch_knn_read_vectors(db, index_table, base, base_ids, bdim))) {
-      } else if (OB_FAIL(batch_knn_read_vectors(db, probe_table, query, probe_ids, qdim))) {
-      } else if (base_ids.empty() || probe_ids.empty() || bdim == 0 || bdim != qdim) {
+      } else if (OB_FAIL(batch_knn_get_vectors(db, index_table, base, base_ids, bdim))) {
+      } else if (OB_FAIL(batch_knn_get_vectors(db, probe_table, query, probe_ids, qdim))) {
+      } else if (base_ids->empty() || probe_ids->empty() || bdim == 0 || bdim != qdim) {
         ret = OB_INVALID_ARGUMENT;
-        LOG_WARN("batch_knn: empty or dim mismatch", K(ret), K(base_ids.size()), K(probe_ids.size()), K(bdim), K(qdim));
+        LOG_WARN("batch_knn: empty or dim mismatch", K(ret), K(base_ids->size()), K(probe_ids->size()), K(bdim), K(qdim));
       } else {
-        if (topk > static_cast<int64_t>(base_ids.size())) { topk = static_cast<int64_t>(base_ids.size()); }
-        const long n = static_cast<long>(base_ids.size());
-        const long nq = static_cast<long>(probe_ids.size());
+        if (topk > static_cast<int64_t>(base_ids->size())) { topk = static_cast<int64_t>(base_ids->size()); }
+        const long n = static_cast<long>(base_ids->size());
+        const long nq = static_cast<long>(probe_ids->size());
         std::vector<unsigned> off(static_cast<size_t>(nq) * topk);
         std::vector<float> dist(static_cast<size_t>(nq) * topk);
-        const long served = common::obvsag::cuvs_batch_knn(base.data(), n, bdim,
-                                query.data(), nq, topk, off.data(), dist.data());
+        const long served = common::obvsag::cuvs_batch_knn(base->data(), n, bdim,
+                                query->data(), nq, topk, off.data(), dist.data());
         if (served != nq) {
           ret = OB_NOT_SUPPORTED;
           LOG_WARN("batch_knn: GPU backend did not serve", K(ret), K(served), K(nq));
@@ -649,7 +823,12 @@ int ObDBMSVectorMySql::batch_knn(ObPLExecCtx &ctx, sql::ParamStore &params, comm
           } else if (OB_FAIL(GCTX.sql_proxy_->write(del.ptr(), 0, affected))) {
             LOG_WARN("batch_knn: clear out_table failed (create it first)", K(ret), K(del));
           }
-          const long CHUNK = 400;
+          // One statement carries 2x the rows it used to: every write() is a
+          // full SQL round trip with its own transaction, and nq*topk result
+          // rows at 400 per statement meant a large number of tiny commits
+          // inside the query window. 800 rows is ~26KB of SQL text (~35KB with
+          // wide ids/distances), still safely below OB_MAX_SQL_LENGTH (64KB).
+          const long CHUNK = 800;
           long q = 0;
           while (OB_SUCC(ret) && q < nq) {
             common::ObSqlString ins;
@@ -662,10 +841,10 @@ int ObDBMSVectorMySql::batch_knn(ObPLExecCtx &ctx, sql::ParamStore &params, comm
               for (long i = 0; OB_SUCC(ret) && i < topk; ++i) {
                 const size_t pidx = static_cast<size_t>(q) * topk + i;
                 const unsigned o = off[pidx];
-                const int64_t nid = (o < base_ids.size()) ? base_ids[o] : -1;
+                const int64_t nid = (o < base_ids->size()) ? (*base_ids)[o] : -1;
                 if (OB_FAIL(ins.append_fmt("%s(%ld,%ld,%.6f,%ld)",
                                (rows_in_stmt > 0) ? "," : "",
-                               static_cast<long>(probe_ids[q]), static_cast<long>(nid),
+                               static_cast<long>((*probe_ids)[q]), static_cast<long>(nid),
                                dist[pidx], static_cast<long>(i)))) {
                 } else {
                   rows_in_stmt++;

@@ -145,3 +145,28 @@ new optimization. All four MATCH hit counts agree across all four runs. The
 three index-only query cases show the intended reduction; the LIMIT case returns
 IDs internally and deliberately retains scoring. These local results do not
 establish an official score or a 50% overall improvement.
+
+## Candidate next revision: doc-id projection without scores
+
+`query_limit` is the only query metric that did not move (1.24 ms versus
+0.70-1.07 ms for the other three). It projects the document id under a LIMIT and
+consumes no score, but the eligibility proof treats every column reference as a
+data-table lookup and therefore keeps BM25.
+
+The candidate change extends `fts_score_is_observable` with the doc-id column
+id: a projection of that column is score-free, because the retrieval scan
+already produces the doc-id mapping and no ranking or threshold depends on the
+score. All other column references keep the scored path, and an unknown
+doc-id column id falls back to the previous behavior.
+
+Validation on 2026-11-09: the native release build and all 17 `fts_index`
+regressions passed. A complete unchanged benchmark (20,000 rows, 3 samples,
+3,000 tokenization rounds and 200 query rounds) retained hit counts
+8,001/11,000/7,332/20. Query times were 0.6944/1.0938/0.8133/1.2306 ms.
+The previous second optimized run was 0.6760/1.0552/0.7825/1.2284 ms;
+these runs do not establish a performance benefit for this candidate.
+
+The internal fulltext document-id column is distinct from the user primary key
+`id`. This extension only admits the former. It therefore does not remove BM25
+from the benchmark's primary-key LIMIT query. Other column references retain
+the conservative scored lookup path. No official score improvement is claimed.

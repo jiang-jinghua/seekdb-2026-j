@@ -12168,21 +12168,32 @@ int ObLogPlan::prepare_text_retrieval_merge(const ObIArray<ObRawExpr *> &merge_m
 }
 
 // Boolean-only natural-language matches need document membership, not BM25.
-static int fts_score_is_observable(ObRawExpr *expr, ObRawExpr *match, bool &observed, bool boolean_safe)
+// A plain projection of the fulltext doc-id column does not consume a score
+// either: the retrieval scan already produces that doc-id mapping, and no
+// ranking or threshold depends on it. Every other column reference keeps the
+// scored path.
+static int fts_score_is_observable(ObRawExpr *expr,
+                                   ObRawExpr *match,
+                                   const uint64_t docid_col_id,
+                                   bool &observed,
+                                   bool boolean_safe)
 {
   int ret = OB_SUCCESS;
   observed = false;
   if (OB_ISNULL(expr)) {
     ret = OB_ERR_UNEXPECTED;
-  } else if (expr == match || expr->is_column_ref_expr()) {
-    // Keep the scored path for data-table lookups as well as visible scores.
+  } else if (expr == match) {
     observed = true;
+  } else if (expr->is_column_ref_expr()) {
+    const uint64_t column_id = static_cast<ObColumnRefRawExpr *>(expr)->get_column_id();
+    observed = (OB_INVALID_ID == docid_col_id || column_id != docid_col_id);
   } else if (boolean_safe && expr->get_expr_type() == T_OP_BOOL && expr->get_param_count() == 1
              && expr->get_param_expr(0) == match) {
     // Retrieval emits 1 for matched documents. Projection/arithmetic keep BM25.
   } else {
     for (int64_t i = 0; OB_SUCC(ret) && !observed && i < expr->get_param_count(); ++i) {
-      if (OB_FAIL(SMART_CALL(fts_score_is_observable(expr->get_param_expr(i), match, observed, boolean_safe)))) {
+      if (OB_FAIL(SMART_CALL(fts_score_is_observable(expr->get_param_expr(i), match, docid_col_id,
+                                                      observed, boolean_safe)))) {
       }
     }
   }
@@ -12291,12 +12302,14 @@ int ObLogPlan::prepare_text_retrieval_info(const uint64_t ref_table_id,
         need_calc_relevance = roots.empty();
         const auto &items = static_cast<const ObSelectStmt *>(get_stmt())->get_select_items();
         for (int64_t i = 0; OB_SUCC(ret) && !need_calc_relevance && i < items.count(); ++i) {
-          if (OB_FAIL(fts_score_is_observable(items.at(i).expr_, match_against, need_calc_relevance, false))) {
+          if (OB_FAIL(fts_score_is_observable(items.at(i).expr_, match_against, docid_col_id,
+                                              need_calc_relevance, false))) {
           }
         }
         for (int64_t i = 0; OB_SUCC(ret) && !need_calc_relevance && i < roots.count(); ++i) {
           const bool is_condition = has_exist_in_array(get_stmt()->get_condition_exprs(), roots.at(i));
-          if (OB_FAIL(fts_score_is_observable(roots.at(i), match_against, need_calc_relevance, is_condition))) {
+          if (OB_FAIL(fts_score_is_observable(roots.at(i), match_against, docid_col_id,
+                                              need_calc_relevance, is_condition))) {
           }
         }
       }

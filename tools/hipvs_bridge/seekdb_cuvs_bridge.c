@@ -10,6 +10,7 @@
 #endif
 #include <stdio.h>
 #include <stdlib.h>
+#include <pthread.h>
 
 typedef struct {
   cuvsResources_t        res;
@@ -17,6 +18,62 @@ typedef struct {
   cuvsCagraIndex_t       idx;
   long n, dim;
 } sk_cuvs_index;
+
+/* ---------------------------------------------------------------------------
+ * CAGRA reuse for the explicit batch API.
+ *
+ * dbms_vector.batch_knn rebuilds the whole graph on every call (documented
+ * limitation of the reference implementation). The graph depends only on
+ * (base, n, dim), and a probe run typically issues several batch_knn calls
+ * (top-10, top-100, ...) over the SAME index table, so the build is repeated
+ * work. Keep the last couple of graphs and hand them back while the data is
+ * unchanged.
+ *
+ * Only seekdb_cuvs_build_cached() puts handles in this cache; the per-index
+ * seekdb_cuvs_build() path (registry / DDL / snapshot) is untouched, so nothing
+ * that owns a handle can have it evicted underneath it. Cached handles are
+ * ignored by seekdb_cuvs_free() and live until process exit.
+ *
+ * Identity is (n, dim, sample fingerprint): first, middle and last row. Two
+ * different datasets agreeing on all of those is not a realistic collision for
+ * a probe table that is written once and then only queried.
+ * ------------------------------------------------------------------------- */
+#define SK_CACHE_SLOTS 2
+typedef struct { void* h; long n, dim; unsigned long long fp; } sk_cache_slot;
+static sk_cache_slot g_sk_cache[SK_CACHE_SLOTS];
+static pthread_mutex_t g_sk_cache_mu = PTHREAD_MUTEX_INITIALIZER;
+
+static unsigned long long sk_fnv(unsigned long long h, const void* p, size_t bytes)
+{
+  const unsigned char* b = (const unsigned char*)p;
+  size_t i;
+  for (i = 0; i < bytes; ++i) { h ^= (unsigned long long)b[i]; h *= 1099511628211ULL; }
+  return h;
+}
+
+static unsigned long long sk_fingerprint(const float* base, long n, long dim)
+{
+  unsigned long long h = 14695981039346656037ULL;
+  const size_t row = (size_t)dim * sizeof(float);
+  h = sk_fnv(h, &n, sizeof(n));
+  h = sk_fnv(h, &dim, sizeof(dim));
+  h = sk_fnv(h, base, row);                                   /* first row */
+  h = sk_fnv(h, base + (size_t)(n / 2) * (size_t)dim, row);   /* middle row */
+  h = sk_fnv(h, base + (size_t)(n - 1) * (size_t)dim, row);   /* last row */
+  return h;
+}
+
+/* Called by seekdb_cuvs_free(): cached handles must survive. */
+static int sk_cache_holds(void* handle)
+{
+  int found = 0, i = 0;
+  pthread_mutex_lock(&g_sk_cache_mu);
+  for (i = 0; i < SK_CACHE_SLOTS; ++i) {
+    if (g_sk_cache[i].h != NULL && g_sk_cache[i].h == handle) { found = 1; }
+  }
+  pthread_mutex_unlock(&g_sk_cache_mu);
+  return found;
+}
 
 void* seekdb_cuvs_build(const float* base, long n, long dim)
 {
@@ -91,11 +148,59 @@ void seekdb_cuvs_free(void* handle)
 {
   sk_cuvs_index* h = (sk_cuvs_index*)handle;
   if (!h) return;
+  if (sk_cache_holds(handle)) { return; }  /* cached graphs live for the process */
   cuvsCagraIndexDestroy(h->idx);
   cuvsCagraIndexParamsDestroy(h->ip);
   cuvsResourcesDestroy(h->res);
   free(h);
 }
+
+/* Same contract as seekdb_cuvs_build(), except the result may be a graph that
+ * this process already built for byte-identical data. The returned handle must
+ * still be treated as "release with seekdb_cuvs_free()" -- that call is a no-op
+ * for cached graphs, so callers need no special casing. */
+void* seekdb_cuvs_build_cached(const float* base, long n, long dim)
+{
+  unsigned long long fp = 0;
+  void* h = NULL;
+  void* evict = NULL;
+  int slot = -1, i = 0;
+
+  if (!base || n <= 0 || dim <= 0) return NULL;
+  fp = sk_fingerprint(base, n, dim);
+
+  pthread_mutex_lock(&g_sk_cache_mu);
+  for (i = 0; i < SK_CACHE_SLOTS; ++i) {
+    if (g_sk_cache[i].h != NULL && g_sk_cache[i].n == n &&
+        g_sk_cache[i].dim == dim && g_sk_cache[i].fp == fp) {
+      h = g_sk_cache[i].h;
+      pthread_mutex_unlock(&g_sk_cache_mu);
+      fprintf(stderr, "[seekdb_cuvs] reuse CAGRA n=%ld dim=%ld (cache hit)\n", n, dim);
+      return h;
+    }
+  }
+  pthread_mutex_unlock(&g_sk_cache_mu);
+
+  h = seekdb_cuvs_build(base, n, dim);
+  if (!h) return NULL;
+
+  pthread_mutex_lock(&g_sk_cache_mu);
+  for (i = 0; i < SK_CACHE_SLOTS; ++i) {
+    if (g_sk_cache[i].h == NULL) { slot = i; break; }
+  }
+  if (slot < 0) { slot = 0; }               /* simple FIFO-ish eviction */
+  evict = g_sk_cache[slot].h;
+  g_sk_cache[slot].h = h;
+  g_sk_cache[slot].n = n;
+  g_sk_cache[slot].dim = dim;
+  g_sk_cache[slot].fp = fp;
+  pthread_mutex_unlock(&g_sk_cache_mu);
+
+  /* `evict` is no longer referenced by any slot, so this really frees it. */
+  if (evict != NULL) { seekdb_cuvs_free(evict); }
+  return h;
+}
+
 
 int seekdb_cuvs_serialize(void* handle, const char* filename)
 {

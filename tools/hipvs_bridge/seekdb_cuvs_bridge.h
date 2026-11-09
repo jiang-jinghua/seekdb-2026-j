@@ -20,6 +20,11 @@ int seekdb_cuvs_cagra_knn(const float* base, long n, long dim,
  *  - seekdb_cuvs_free: releases the handle.
  * All ROCm/cuVS state lives inside the .so; seekdb only ever sees these C symbols. */
 void* seekdb_cuvs_build(const float* base, long n, long dim);
+/* Like seekdb_cuvs_build, but may return a graph this process already built for
+ * byte-identical (base, n, dim). Intended for dbms_vector.batch_knn, which
+ * otherwise rebuilds the same graph on every call. Release with
+ * seekdb_cuvs_free(), which is a no-op for cached graphs. */
+void* seekdb_cuvs_build_cached(const float* base, long n, long dim);
 int   seekdb_cuvs_search(void* handle, const float* query, long nq, long topk,
                          unsigned int* out_ids, float* out_dist);
 void  seekdb_cuvs_free(void* handle);

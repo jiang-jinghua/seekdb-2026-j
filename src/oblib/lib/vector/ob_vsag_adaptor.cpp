@@ -31,6 +31,7 @@
 #include <cstdio>
 #include <cstring>
 #include <atomic>
+#include <condition_variable>
 #include <pthread.h>
 #include "vsag/vsag.h"
 #include "vsag/errors.h"
@@ -51,6 +52,10 @@ extern "C" int   seekdb_cuvs_cagra_knn(const float *base, long n, long dim,
                                        const float *query, long nq, long topk,
                                        unsigned int *out_ids);
 extern "C" void *seekdb_cuvs_build(const float *base, long n, long dim);
+// Reuse-aware variant: dbms_vector.batch_knn re-reads the same index table on
+// every call, and the graph only depends on the data, so the bridge can hand
+// back the graph it built last time instead of rebuilding it.
+extern "C" void *seekdb_cuvs_build_cached(const float *base, long n, long dim);
 extern "C" int   seekdb_cuvs_search(void *handle, const float *query, long nq, long topk,
                                     unsigned int *out_ids, float *out_dist);
 extern "C" void  seekdb_cuvs_free(void *handle);
@@ -62,6 +67,7 @@ extern "C" void *seekdb_cuvs_deserialize(const char *filename, long n, long dim)
 // never reached at runtime; they exist only to satisfy the linker.
 static int   seekdb_cuvs_cagra_knn(const float *, long, long, const float *, long, long, unsigned int *) { return -1; }
 static void *seekdb_cuvs_build(const float *, long, long) { return nullptr; }
+static void *seekdb_cuvs_build_cached(const float *, long, long) { return nullptr; }
 static int   seekdb_cuvs_search(void *, const float *, long, long, unsigned int *, float *) { return -1; }
 static void  seekdb_cuvs_free(void *) {}
 static int seekdb_cuvs_serialize(void *, const char *) { return -1; }
@@ -263,7 +269,10 @@ struct ObCuvsRawBatchJob {
 };
 static void *ob_cuvs_raw_batch_job(void *arg) {
   ObCuvsRawBatchJob *j = static_cast<ObCuvsRawBatchJob *>(arg);
-  void *h = seekdb_cuvs_build(j->base, j->n, j->dim);
+  // Reuse-aware: batch_knn re-reads the same index table on every call, so the
+  // bridge hands back the graph it already built for this exact data instead of
+  // rebuilding it. seekdb_cuvs_free() is a no-op for a cached graph.
+  void *h = seekdb_cuvs_build_cached(j->base, j->n, j->dim);
   if (h != nullptr) {
     if (seekdb_cuvs_search(h, j->query, j->nq, j->topk, j->off, j->dst) == 0) {
       j->served_ = j->nq;
@@ -274,6 +283,80 @@ static void *ob_cuvs_raw_batch_job(void *arg) {
 }
 
 static const size_t OB_CUVS_MIN_PTS = 256;  // CAGRA needs a graph; below this -> VSAG
+
+// [contest] Single-query GPU search used to spawn a fresh 32MB-stack pthread per
+// query: mmap + clone sits on the critical path of a sub-millisecond CAGRA
+// lookup, and a probe run issues thousands of them. Keep one such thread alive
+// and hand it jobs one at a time instead. Callers already serialize GPU work
+// under g_ob_cuvs_mu, so a single-slot handoff is sufficient; if the thread
+// cannot be created we fall back to the original thread-per-job pattern.
+struct ObCuvsWorker {
+  std::mutex mu;
+  std::condition_variable cv;
+  bool started = false;
+  bool has_job = false;
+  bool finished = false;
+  bool stop = false;
+  void *(*fn)(void *) = nullptr;
+  void *arg = nullptr;
+  pthread_t tid;
+};
+static ObCuvsWorker g_ob_cuvs_worker;
+static std::mutex g_ob_cuvs_worker_start_mu;
+
+static void *ob_cuvs_worker_main(void *arg) {
+  ObCuvsWorker *w = static_cast<ObCuvsWorker *>(arg);
+  for (;;) {
+    void *(*fn)(void *) = nullptr;
+    void *job_arg = nullptr;
+    {
+      std::unique_lock<std::mutex> lk(w->mu);
+      w->cv.wait(lk, [w] { return w->has_job || w->stop; });
+      if (w->stop) { break; }
+      fn = w->fn;
+      job_arg = w->arg;
+      w->has_job = false;
+    }
+    if (fn != nullptr) { fn(job_arg); }
+    {
+      std::lock_guard<std::mutex> lk(w->mu);
+      w->finished = true;
+    }
+    w->cv.notify_all();
+  }
+  return nullptr;
+}
+
+// Runs fn(arg) on the shared large-stack thread. Returns false when the thread is
+// unavailable, in which case the caller keeps using its own pthread.
+static bool ob_cuvs_run_on_worker(void *(*fn)(void *), void *arg) {
+  {
+    std::lock_guard<std::mutex> guard(g_ob_cuvs_worker_start_mu);
+    if (!g_ob_cuvs_worker.started) {
+      pthread_attr_t attr;
+      pthread_attr_init(&attr);
+      pthread_attr_setstacksize(&attr, 32UL * 1024 * 1024);
+      const int rc = pthread_create(&g_ob_cuvs_worker.tid, &attr,
+                                    ob_cuvs_worker_main, &g_ob_cuvs_worker);
+      pthread_attr_destroy(&attr);
+      g_ob_cuvs_worker.started = (rc == 0);
+    }
+  }
+  if (!g_ob_cuvs_worker.started) { return false; }
+  {
+    std::lock_guard<std::mutex> lk(g_ob_cuvs_worker.mu);
+    g_ob_cuvs_worker.fn = fn;
+    g_ob_cuvs_worker.arg = arg;
+    g_ob_cuvs_worker.finished = false;
+    g_ob_cuvs_worker.has_job = true;
+  }
+  g_ob_cuvs_worker.cv.notify_all();
+  {
+    std::unique_lock<std::mutex> lk(g_ob_cuvs_worker.mu);
+    g_ob_cuvs_worker.cv.wait(lk, [] { return g_ob_cuvs_worker.finished; });
+  }
+  return true;
+}
 
 static bool ob_cuvs_try_search(void *key, vsag::Allocator *alloc,
                                const float *query, int /*dim*/, int64_t topk,
@@ -293,10 +376,12 @@ static bool ob_cuvs_try_search(void *key, vsag::Allocator *alloc,
   std::vector<unsigned> off(topk);
   std::vector<float> dst(topk);
   ObCuvsJob job{ent, query, topk, static_cast<int>(ent->dim_), n, need_build, &off, &dst, -1, false};
-  pthread_t tid; pthread_attr_t attr; pthread_attr_init(&attr);
-  pthread_attr_setstacksize(&attr, 32UL * 1024 * 1024);
-  if (pthread_create(&tid, &attr, ob_cuvs_job, &job) == 0) { pthread_join(tid, nullptr); }
-  pthread_attr_destroy(&attr);
+  if (!ob_cuvs_run_on_worker(ob_cuvs_job, &job)) {
+    pthread_t tid; pthread_attr_t attr; pthread_attr_init(&attr);
+    pthread_attr_setstacksize(&attr, 32UL * 1024 * 1024);
+    if (pthread_create(&tid, &attr, ob_cuvs_job, &job) == 0) { pthread_join(tid, nullptr); }
+    pthread_attr_destroy(&attr);
+  }
   if (job.built_) { ob_vsag_trace("cuvs_build", key, static_cast<long>(ent->dim_), static_cast<long>(n)); }
   if (ent->bridge_ == nullptr || job.rc_ != 0) { return false; }
   // Post-filter: cuVS returned UNFILTERED top-k. Apply the query's row filter

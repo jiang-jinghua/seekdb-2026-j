@@ -227,7 +227,11 @@ int oceanbase::storage::ObDDLStorageUtil::report_ddl_sstable_checksum(
         break;
       }
     }
-    ob_usleep(100L * 1000L);
+    // A successful checksum update is synchronous. Do not delay the caller
+    // after it completes; retain the existing failure backoff.
+    if (OB_FAIL(ret)) {
+      ob_usleep(100L * 1000L);
+    }
   }
   return ret;
 }

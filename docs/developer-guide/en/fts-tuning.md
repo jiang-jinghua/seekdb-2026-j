@@ -227,3 +227,33 @@ of malformed byte sequences. Its expected output was captured with the old
 executable and then checked against the candidate. Conversion can sanitize
 malformed SQL input, so this is not exhaustive decoder-level malformed-input
 coverage. All four benchmark hit counts stayed at 8001/11000/7332/20.
+
+## Avoid successful checksum-report delay (2026-11-10)
+
+report_ddl_sstable_checksum previously slept for 100 ms after its retry loop,
+even after a successful synchronous ObDDLChecksumOperator::update_checksum.
+The new condition retains that wait on failure only. All checksum reporting,
+retry counts, DDL state transitions and completion checks remain unchanged.
+Another report_ddl_checksum caller in ObComplementDataTask also proceeds
+without an unconditional post-success sleep.
+
+The release build and all 18 fts_index cases passed. Complete benchmark runs
+on the same private instance, with unchanged data and configuration, measured:
+
+| Metric (seconds) | Baseline 841081065 mean | Candidate mean | Reduction |
+| --- | ---: | ---: | ---: |
+| IK title+content index | 2.7960 | 2.4875 | 11.0% |
+| IK content index | 2.1545 | 2.0495 | 4.9% |
+| English index | 1.3515 | 1.2520 | 7.4% |
+
+Both candidate runs retained hit counts 8001/11000/7332/20. These are two
+baseline runs followed by two candidate runs, not randomized trials. They do
+not establish the official score or remove shared-host timing variability.
+Failure injection was not run; the failure path retains its existing final
+sleep and retry behavior. The fixed-processor dispatch experiment did not show
+a stable overall benefit and is not included.
+
+Raw reports: [before 1](fts-tuning-results/fts-checksum-before1.txt),
+[before 2](fts-tuning-results/fts-checksum-before2.txt),
+[after 1](fts-tuning-results/fts-checksum-after1.txt),
+[after 2](fts-tuning-results/fts-checksum-after2.txt).

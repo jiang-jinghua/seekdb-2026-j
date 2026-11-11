@@ -51,15 +51,37 @@ void sync_fd(int fd) {
     ::fsync(fd);
 #endif
 }
-void truncate_fd(const std::string& path, long len) {
+void truncate_fd(const std::string& path, long long len) {
 #ifdef _WIN32
-    (void)path; (void)len;
+    (void)path; (void)len; // never truncated on the Windows dev path
 #else
-    ::truncate(path.c_str(), len);
+    ::truncate(path.c_str(), (long)len);
 #endif
 }
+// positioned read; does not depend on the fd's file position
+bool pread_full(int fd, char* buf, size_t n, uint64_t off) {
+    size_t done = 0;
+    while (done < n) {
+        size_t chunk = n - done;
+        if (chunk > (1u << 30)) chunk = 1u << 30;
+        ssize_t r;
+#ifdef _WIN32
+        if (_lseeki64(fd, (long long)(off + done), SEEK_SET) < 0) return false;
+        r = _read(fd, buf + done, (unsigned)chunk);
+#else
+        r = ::pread(fd, buf + done, chunk, (off_t)(off + done));
+#endif
+        if (r <= 0) return false;
+        done += (size_t)r;
+    }
+    return true;
+}
+
+} // namespace
 
 // ---------- crc32 ----------
+namespace {
+
 uint32_t crc32(const void* data, size_t n) {
     static uint32_t table[256];
     static bool init = false;
@@ -170,6 +192,8 @@ Engine::Engine(const std::string& dir) : dir_(dir) {
     strict_sync_ = std::getenv("MVDB_FSYNC") != nullptr;
     const char* se = std::getenv("MVDB_SYNC_EVERY");
     if (se && *se) sync_every_ = (uint32_t)std::max(1, std::atoi(se));
+    const char* rc = std::getenv("MVDB_ROW_CACHE_MB");
+    if (rc && *rc) row_cache_budget_ = (size_t)std::max(1, std::atoi(rc)) << 20;
     load_dir();
 }
 
@@ -179,6 +203,7 @@ Engine::~Engine() {
         Table& t = *kv.second;
         if (t.wal_buf.size() > 0) { try { wal_flush_buf(t); } catch (...) {} }
         if (t.wal_fd >= 0) close_fd(t.wal_fd);
+        if (t.data_fd >= 0) close_fd(t.data_fd);
     }
 }
 
@@ -238,34 +263,39 @@ void Engine::load_dir() {
         std::string base = p.substr(0, p.size() - 5);
         t->meta_path = p;
         t->wal_path = base + ".wal";
-        // replay WAL
+        // replay the data file: build pk -> (offset,len) index only; rows stay on disk
         int fd = open_read(t->wal_path);
+        uint64_t off = 0;
         if (fd >= 0) {
             std::string buf;
-            char tmp[65536];
+            char tmp[1 << 20];
             ssize_t r;
             while ((r = read(fd, tmp, sizeof(tmp))) > 0) buf.append(tmp, (size_t)r);
             close_fd(fd);
-            size_t off = 0;
-            while (off + 8 <= buf.size()) {
-                size_t consumed = wal_replay_one(buf.data() + off, buf.size() - off, *t, true);
+            size_t pos = 0;
+            while (pos + 8 <= buf.size()) {
+                size_t consumed = wal_replay_one(buf.data() + pos, buf.size() - pos, off, *t, true);
                 if (consumed == 0) {
-                    fprintf(stderr, "[minivectordb] WAL %s: stop replay at offset %zu (partial/corrupt tail, truncating)\n",
-                            t->wal_path.c_str(), off);
-                    truncate_fd(t->wal_path, (long)off);
+                    fprintf(stderr, "[minivectordb] data file %s: stop replay at offset %llu (partial/corrupt tail, truncating)\n",
+                            t->wal_path.c_str(), (unsigned long long)off);
+                    truncate_fd(t->wal_path, (long long)off);
                     break;
                 }
+                pos += consumed;
                 off += consumed;
             }
         }
+        t->file_off = off;
         t->wal_fd = open_append(t->wal_path);
+        t->data_fd = open_read(t->wal_path);
         std::string key = lower_name(t->schema.name);
         tables_[key] = std::move(t);
-        fprintf(stderr, "[minivectordb] loaded table '%s' (%zu rows)\n", key.c_str(), tables_[key]->rows.size());
+        fprintf(stderr, "[minivectordb] loaded table '%s' (%zu rows indexed)\n",
+                key.c_str(), tables_[key]->entries.size());
     }
 }
 
-size_t Engine::wal_replay_one(const char* data, size_t size, Table& t, bool apply) {
+size_t Engine::wal_replay_one(const char* data, size_t size, uint64_t off, Table& t, bool apply) {
     uint32_t len = get_u32(data);
     if (len + 8 > size) return 0;
     uint32_t crc = get_u32(data + 4);
@@ -275,14 +305,18 @@ size_t Engine::wal_replay_one(const char* data, size_t size, Table& t, bool appl
     uint8_t op = (uint8_t)payload[0];
     int64_t pk = get_i64(payload + 1);
     if (op == OP_DELETE) {
-        t.rows.erase(pk);
+        erase_row(t, pk);
         return len + 8;
     }
-    // insert
+    t.entries[pk] = Entry{ Loc{off, len + 8}, nullptr };
+    return len + 8;
+}
+
+void Engine::decode_row_payload(const char* payload, uint32_t len, Row& row) {
     const char* p = payload + 9;
     const char* end = payload + len;
     uint32_t ncols = get_u32(p); p += 4;
-    Row row;
+    row.clear();
     row.reserve(ncols);
     for (uint32_t i = 0; i < ncols && p + 2 <= end; ++i) {
         Value v;
@@ -311,8 +345,6 @@ size_t Engine::wal_replay_one(const char* data, size_t size, Table& t, bool appl
         }
         row.push_back(std::move(v));
     }
-    t.rows[pk] = std::move(row);
-    return len + 8;
 }
 
 std::string Engine::encode_record_insert(const Row& row) {
@@ -324,10 +356,11 @@ std::string Engine::encode_record_delete(int64_t pk) {
 }
 void Engine::wal_append(Table& t, const std::string& rec) {
     t.wal_buf += rec;
+    t.file_off += rec.size();
     if (t.wal_buf.size() >= (256u << 10)) wal_flush_buf(t);
 }
 void Engine::wal_flush_buf(Table& t) {
-    if (t.wal_fd < 0) throw SqlError("WAL not open for table " + t.schema.name);
+    if (t.wal_fd < 0) throw SqlError("data file not open for table " + t.schema.name);
     size_t off = 0;
     while (off < t.wal_buf.size()) {
 #ifdef _WIN32
@@ -335,7 +368,7 @@ void Engine::wal_flush_buf(Table& t) {
 #else
         ssize_t w = ::write(t.wal_fd, t.wal_buf.data() + off, t.wal_buf.size() - off);
 #endif
-        if (w <= 0) throw SqlError("WAL write failed");
+        if (w <= 0) throw SqlError("data file write failed");
         off += (size_t)w;
     }
     t.wal_buf.clear();
@@ -345,12 +378,106 @@ void Engine::wal_sync(Table& t) {
     if (t.wal_fd >= 0) sync_fd(t.wal_fd);
 }
 
-void Engine::wal_auto_commit(Table& t, const std::string& rec, bool force_sync) {
+Engine::Loc Engine::wal_record(Table& t, const std::string& rec, bool force_sync) {
+    Loc loc{ t.file_off, (uint32_t)rec.size() };
     wal_append(t, rec);
     // write-through: committed data must be in the OS (survive SIGKILL) before ack
     wal_flush_buf(t);
-    if (force_sync || strict_sync_) { wal_sync(t); t.unsynced = 0; return; }
+    if (force_sync || strict_sync_) { wal_sync(t); t.unsynced = 0; return loc; }
     if (++t.unsynced >= sync_every_) { wal_sync(t); t.unsynced = 0; }
+    return loc;
+}
+
+// ---------- bounded row cache ----------
+
+size_t Engine::row_bytes(const Row& row) {
+    size_t b = 64;
+    for (const Value& v : row) {
+        b += 32;
+        if (v.type == ColType::VARCHAR) b += v.s.size();
+        else if (v.type == ColType::VECTOR) b += v.v.size() * 4;
+    }
+    return b;
+}
+
+void Engine::evict_if_needed(Table& t) {
+    while (t.cache_bytes > row_cache_budget_ && !t.cache_q.empty()) {
+        int64_t pk = t.cache_q.front();
+        t.cache_q.pop_front();
+        auto it = t.entries.find(pk);
+        if (it == t.entries.end() || !it->second.cache) continue;
+        t.cache_bytes -= row_bytes(*it->second.cache);
+        it->second.cache.reset();
+    }
+}
+
+void Engine::put_row(Table& t, int64_t pk, Loc loc, std::shared_ptr<Row> row) {
+    auto it = t.entries.find(pk);
+    if (it == t.entries.end())
+        it = t.entries.emplace(pk, Entry{ loc, nullptr }).first;
+    else
+        it->second.loc = loc;
+    if (row) {
+        size_t b = row_bytes(*row);
+        it->second.cache = std::move(row);
+        t.cache_bytes += b;
+        t.cache_q.push_back(pk);
+        evict_if_needed(t);
+    }
+}
+
+void Engine::erase_row(Table& t, int64_t pk) {
+    auto it = t.entries.find(pk);
+    if (it == t.entries.end()) return;
+    if (it->second.cache) t.cache_bytes -= row_bytes(*it->second.cache);
+    t.entries.erase(it);
+}
+
+std::shared_ptr<Row> Engine::read_row(Table& t, int64_t pk) {
+    auto it = t.entries.find(pk);
+    if (it == t.entries.end()) return nullptr;
+    if (it->second.cache) return it->second.cache;
+    std::string buf(it->second.loc.len, '\0');
+    if (!pread_full(t.data_fd, buf.data(), buf.size(), it->second.loc.off))
+        throw SqlError(errcode::INVALID_VALUE, "data file read failed for pk " + std::to_string(pk));
+    uint32_t len = get_u32(buf.data());
+    uint32_t crc = get_u32(buf.data() + 4);
+    const char* payload = buf.data() + 8;
+    if (len + 8 != buf.size() || crc32(payload, len) != crc)
+        throw SqlError(errcode::INVALID_VALUE, "data file record corrupt for pk " + std::to_string(pk));
+    auto r = std::make_shared<Row>();
+    decode_row_payload(payload, len, *r);
+    // fill the cache (bounded); the returned shared_ptr stays valid even if evicted
+    it->second.cache = r;
+    t.cache_bytes += row_bytes(*r);
+    t.cache_q.push_back(pk);
+    evict_if_needed(t);
+    return r;
+}
+
+void Engine::for_each_visible(Table& t,
+                              const std::function<void(int64_t, const Row&, const Entry*)>& fn) {
+    const auto ops_it = staged_.find(lower_name(t.schema.name));
+    const std::map<int64_t, std::optional<Row>>* ops =
+        (in_txn_ && ops_it != staged_.end()) ? &ops_it->second : nullptr;
+    for (auto& kv : t.entries) {
+        if (ops) {
+            auto oit = ops->find(kv.first);
+            if (oit != ops->end()) {
+                if (!oit->second) continue;          // deleted in txn
+                fn(kv.first, *oit->second, nullptr); // staged row wins
+                continue;
+            }
+        }
+        std::shared_ptr<Row> r = read_row(t, kv.first);
+        if (r) fn(kv.first, *r, &kv.second);
+    }
+    if (ops) {
+        for (const auto& kv : *ops) {
+            if (kv.second && !t.entries.count(kv.first))   // newly inserted in txn
+                fn(kv.first, *kv.second, nullptr);
+        }
+    }
 }
 
 void Engine::shutdown() {
@@ -374,6 +501,7 @@ void Engine::create_table(const Schema& schema) {
     t->wal_path = dir_ + "/" + key + ".wal";
     save_meta(*t);
     t->wal_fd = open_append(t->wal_path);
+    t->data_fd = open_read(t->wal_path);
     tables_[key] = std::move(t);
 }
 
@@ -382,6 +510,7 @@ void Engine::drop_table(const std::string& name) {
     auto it = tables_.find(key);
     if (it == tables_.end()) throw SqlError(errcode::TABLE_MISSING, "table not found: " + name);
     if (it->second->wal_fd >= 0) close_fd(it->second->wal_fd);
+    if (it->second->data_fd >= 0) close_fd(it->second->data_fd);
     std::remove(it->second->meta_path.c_str());
     std::remove(it->second->wal_path.c_str());
     tables_.erase(it);
@@ -404,19 +533,26 @@ void Engine::txn_commit() {
         if (tit == tables_.end()) continue;
         Table& t = *tit->second;
         const auto& ops = staged_[tn];
+        struct Applied { int64_t pk; Loc loc; std::shared_ptr<Row> row; };
+        std::vector<Applied> applied;
         for (const auto& kv : ops) {
             if (kv.second) {
-                Row copy = *kv.second;
-                wal_append(t, encode_record_insert(copy));
+                std::string rec = encode_record_insert(*kv.second);
+                Loc loc{ t.file_off, (uint32_t)rec.size() };
+                wal_append(t, rec);
+                applied.push_back({ kv.first, loc, std::make_shared<Row>(std::move(*kv.second)) });
             } else {
-                wal_append(t, encode_record_delete(kv.first));
+                std::string rec = encode_record_delete(kv.first);
+                Loc loc{ t.file_off, (uint32_t)rec.size() };
+                wal_append(t, rec);
+                applied.push_back({ kv.first, loc, nullptr });
             }
         }
         wal_sync(t); // explicit COMMIT: force durability
         t.unsynced = 0;
-        for (const auto& kv : ops) {
-            if (kv.second) t.rows[kv.first] = std::move(*kv.second);
-            else t.rows.erase(kv.first);
+        for (auto& a : applied) {
+            if (a.row) put_row(t, a.pk, a.loc, a.row);
+            else erase_row(t, a.pk);
         }
     }
     staged_.clear();
@@ -488,7 +624,7 @@ void Engine::coerce_value(const ColumnDef& cd, Value& v) const {
 
 void Engine::check_row(const Table& t, const Row& /*row*/, int64_t pk,
                        bool check_dup_committed, bool check_dup_staged) const {
-    if (check_dup_committed && t.rows.count(pk))
+    if (check_dup_committed && t.entries.count(pk))
         throw SqlError(errcode::DUP_KEY, "duplicate primary key: " + std::to_string(pk));
     if (check_dup_staged && staged_.count(lower_name(t.schema.name))) {
         const auto& ops = staged_.at(lower_name(t.schema.name));
@@ -578,28 +714,6 @@ bool Engine::eval_where(const Expr* e, const Row& row, const Schema& sch) const 
     return !v.null && v.i != 0;
 }
 
-void Engine::collect_view(const Table& t,
-                          std::vector<std::pair<int64_t, const Row*>>& view) const {
-    const auto ops_it = staged_.find(lower_name(t.schema.name));
-    const std::map<int64_t, std::optional<Row>>* ops =
-        (in_txn_ && ops_it != staged_.end()) ? &ops_it->second : nullptr;
-    for (const auto& kv : t.rows) {
-        if (ops && ops->count(kv.first)) {
-            const auto& o = ops->at(kv.first);
-            if (!o) continue;                    // deleted in txn
-            view.emplace_back(kv.first, &*o);
-        } else {
-            view.emplace_back(kv.first, &kv.second);
-        }
-    }
-    if (ops) {
-        for (const auto& kv : *ops) {
-            if (kv.second && !t.rows.count(kv.first))   // newly inserted in txn
-                view.emplace_back(kv.first, &*kv.second);
-        }
-    }
-}
-
 // ---------- execute ----------
 
 Result Engine::execute(const Stmt& st) {
@@ -654,8 +768,10 @@ Result Engine::execute(const Stmt& st) {
                 if (in_txn_) {
                     txn_stage(st.table, p.pk, std::move(p.row));
                 } else {
-                    wal_auto_commit(t, encode_record_insert(p.row));
-                    t.rows[p.pk] = std::move(p.row);
+                    std::string rec = encode_record_insert(p.row);
+                    Loc loc{ t.file_off, (uint32_t)rec.size() };
+                    wal_record(t, rec);
+                    put_row(t, p.pk, loc, std::make_shared<Row>(std::move(p.row)));
                 }
             }
             Result r;
@@ -667,16 +783,16 @@ Result Engine::execute(const Stmt& st) {
             Table& t = *get_table(st.table);
             bind_expr(st.where.get(), t.schema);
             std::vector<int64_t> targets;
-            std::vector<std::pair<int64_t, const Row*>> view;
-            collect_view(t, view);
-            for (auto& kv : view)
-                if (eval_where(st.where.get(), *kv.second, t.schema))
-                    targets.push_back(kv.first);
+            for_each_visible(t, [&](int64_t pk, const Row& row, const Entry*) {
+                if (eval_where(st.where.get(), row, t.schema))
+                    targets.push_back(pk);
+            });
             for (int64_t pk : targets) {
                 if (in_txn_) txn_stage(st.table, pk, std::nullopt);
                 else {
-                    wal_auto_commit(t, encode_record_delete(pk));
-                    t.rows.erase(pk);
+                    std::string rec = encode_record_delete(pk);
+                    wal_record(t, rec);
+                    erase_row(t, pk);
                 }
             }
             Result r;
@@ -697,21 +813,35 @@ Result Engine::execute(const Stmt& st) {
             bind_expr(st.where.get(), sch);
             // rows to update: pk -> new row
             std::map<int64_t, Row> updates;
-            std::vector<std::pair<int64_t, const Row*>> view;
-            collect_view(t, view);
-            for (auto& kv : view) {
-                if (!eval_where(st.where.get(), *kv.second, sch)) continue;
-                Row newrow = *kv.second;
+            std::vector<int64_t> matched;
+            for_each_visible(t, [&](int64_t pk, const Row& row, const Entry*) {
+                if (eval_where(st.where.get(), row, sch))
+                    matched.push_back(pk);
+            });
+            // re-read matched rows and build the new versions
+            for (int64_t pk : matched) {
+                std::shared_ptr<Row> cur;
+                {   // staged rows win; read_row handles the committed case
+                    const auto ops_it = staged_.find(lower_name(t.schema.name));
+                    if (in_txn_ && ops_it != staged_.end()) {
+                        auto oit = ops_it->second.find(pk);
+                        if (oit != ops_it->second.end() && oit->second)
+                            cur = std::make_shared<Row>(*oit->second);
+                    }
+                    if (!cur) cur = read_row(t, pk);
+                }
+                if (!cur) continue;
+                Row newrow = *cur;
                 for (auto& sv : sets) {
                     Value v = sv.second;
                     coerce_value(sch.cols[sv.first], v);
                     newrow[sv.first] = std::move(v);
                 }
                 int64_t newpk = row_pk(sch, newrow);
-                updates[kv.first] = std::move(newrow);
-                if (newpk != kv.first) {
+                updates[pk] = std::move(newrow);
+                if (newpk != pk) {
                     // pk changed: ensure target free
-                    if (t.rows.count(newpk) && !updates.count(newpk))
+                    if (t.entries.count(newpk) && !updates.count(newpk))
                         throw SqlError(errcode::DUP_KEY, "duplicate primary key on update: " + std::to_string(newpk));
                 }
             }
@@ -726,7 +856,7 @@ Result Engine::execute(const Stmt& st) {
             }
             for (const auto& kv : updates) {
                 if (in_txn_) txn_stage(st.table, kv.first, std::nullopt); // remove old
-                else t.rows.erase(kv.first);
+                else erase_row(t, kv.first);
             }
             for (const auto& kv : updates) {
                 int64_t npk = row_pk(sch, kv.second);
@@ -735,8 +865,10 @@ Result Engine::execute(const Stmt& st) {
                     txn_stage(st.table, npk, kv.second);
                 } else {
                     Row copy = kv.second;
-                    wal_auto_commit(t, encode_record_insert(copy));
-                    t.rows[npk] = std::move(kv.second);
+                    std::string rec = encode_record_insert(copy);
+                    Loc loc{ t.file_off, (uint32_t)rec.size() };
+                    wal_record(t, rec);
+                    put_row(t, npk, loc, std::make_shared<Row>(std::move(kv.second)));
                 }
             }
             Result r;
@@ -857,51 +989,68 @@ Result Engine::execute(const Stmt& st) {
                 }
             }
 
-            // gather + filter
-            struct Cand { int64_t pk; const Row* row; std::vector<double> keys; };
+            // order key: exact comparisons (int64 for BIGINT, string for VARCHAR, double otherwise)
+            struct Key {
+                int kind = 0; // 0=double, 1=int64, 2=string
+                double d = 0;
+                int64_t i = 0;
+                std::string s;
+            };
+            auto key_from_value = [](const Value& v) {
+                Key k;
+                if (v.null) { k.kind = 0; k.d = 0; return k; } // same as previous behavior for NULL scalars
+                if (v.type == ColType::BIGINT) { k.kind = 1; k.i = v.i; }
+                else if (v.type == ColType::DOUBLE) { k.kind = 0; k.d = v.d; }
+                else if (v.type == ColType::VARCHAR) { k.kind = 2; k.s = v.s; }
+                else { k.kind = 0; k.d = 0; }
+                return k;
+            };
+            auto key_less = [](const Key& x, const Key& y) {
+                if (x.kind != y.kind) return x.kind < y.kind;
+                if (x.kind == 1) return x.i < y.i;
+                if (x.kind == 2) return x.s < y.s;
+                return x.d < y.d;
+            };
+
+            // gather + filter (rows are read from disk on demand; only matches are kept)
+            struct Cand { int64_t pk; std::shared_ptr<Row> row; std::vector<Key> keys; };
             std::vector<Cand> cands;
-            std::vector<std::pair<int64_t, const Row*>> view;
-            collect_view(t, view);
-            for (auto& kv : view) {
-                if (!eval_where(st.where.get(), *kv.second, sch)) continue;
+            for_each_visible(t, [&](int64_t pk, const Row& row, const Entry*) {
+                if (!eval_where(st.where.get(), row, sch)) return;
                 Cand c;
-                c.pk = kv.first;
-                c.row = kv.second;
+                c.pk = pk;
+                c.row = std::make_shared<Row>(row);
                 c.keys.reserve(ord.size());
                 for (const auto& o : ord) {
+                    const Value& v = (*c.row)[o.idx];
                     if (o.is_l2) {
-                        const Value& v = (*kv.second)[o.idx];
-                        double d = v.null ? 1e30 : (double)l2_distance(v.v.data(), o.vec->data(), v.v.size());
-                        c.keys.push_back(d);
+                        Key k; k.kind = 0;
+                        k.d = v.null ? 1e30 : (double)l2_distance(v.v.data(), o.vec->data(), v.v.size());
+                        c.keys.push_back(k);
                     } else {
-                        const Value& v = (*kv.second)[o.idx];
-                        if (v.type == ColType::BIGINT) c.keys.push_back((double)v.i);
-                        else if (v.type == ColType::DOUBLE) c.keys.push_back(v.d);
-                        else if (v.type == ColType::VARCHAR) c.keys.push_back((double)v.s.size());
-                        else c.keys.push_back(0);
+                        c.keys.push_back(key_from_value(v));
                     }
                 }
                 cands.push_back(std::move(c));
-            }
+            });
 
             // top-K fast path: single L2 ascending order with LIMIT
             bool topk_path = ord.size() == 1 && ord[0].is_l2 && !ord[0].desc && st.limit >= 0;
+            auto cand_less = [&](const Cand& a, const Cand& b) {
+                for (size_t i = 0; i < ord.size(); ++i) {
+                    const Key& x = a.keys[i];
+                    const Key& y = b.keys[i];
+                    bool xl = key_less(x, y), yl = key_less(y, x);
+                    if (xl != yl) return ord[i].desc ? yl : xl;
+                }
+                return a.pk < b.pk;
+            };
             if (topk_path) {
                 size_t k = std::min((size_t)st.limit, cands.size());
-                std::partial_sort(cands.begin(), cands.begin() + k, cands.end(),
-                                  [](const Cand& a, const Cand& b) {
-                                      if (a.keys[0] != b.keys[0]) return a.keys[0] < b.keys[0];
-                                      return a.pk < b.pk;
-                                  });
+                std::partial_sort(cands.begin(), cands.begin() + k, cands.end(), cand_less);
                 cands.resize(k);
             } else if (!ord.empty()) {
-                std::sort(cands.begin(), cands.end(), [&ord](const Cand& a, const Cand& b) {
-                    for (size_t i = 0; i < ord.size(); ++i) {
-                        double x = a.keys[i], y = b.keys[i];
-                        if (x != y) return ord[i].desc ? (x > y) : (x < y);
-                    }
-                    return a.pk < b.pk;
-                });
+                std::sort(cands.begin(), cands.end(), cand_less);
             } else {
                 std::sort(cands.begin(), cands.end(),
                           [](const Cand& a, const Cand& b) { return a.pk < b.pk; });
@@ -927,7 +1076,7 @@ Result Engine::execute(const Stmt& st) {
                         else {
                             bool reuse_key = !ord.empty() && ord[0].is_l2 && ord[0].idx == p.idx &&
                                              c.keys.size() == 1;
-                            out.d = reuse_key ? c.keys[0]
+                            out.d = reuse_key ? c.keys[0].d
                                               : (double)l2_distance(v.v.data(), p.vec->data(), v.v.size());
                         }
                         r.push_back(std::move(out));

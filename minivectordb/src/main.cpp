@@ -16,10 +16,6 @@
 #include "json.h"
 #include "parser.h"
 
-#ifndef _WIN32
-#include <unistd.h> // _exit
-#endif
-
 #ifdef _WIN32
 #include <fcntl.h>
 #include <io.h>

@@ -91,7 +91,7 @@ void* seekdb_cuvs_build(const float* base, long n, long dim)
   if (cuvsCagraIndexParamsCreate(&h->ip) != CUVS_SUCCESS) goto fail_res;
   h->ip->build_algo = NN_DESCENT;
   h->ip->graph_degree = 128;
-  h->ip->intermediate_graph_degree = 192;
+  h->ip->intermediate_graph_degree = 160;
   // Preserve graph density; offset bounded refinement with a wider search.
   h->ip->nn_descent_niter = 35;
   if (cuvsCagraIndexCreate(&h->idx)      != CUVS_SUCCESS) goto fail_ip;

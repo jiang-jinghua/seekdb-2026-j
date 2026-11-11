@@ -1,0 +1,22 @@
+SET NAMES utf8mb4;
+SELECT TOKENIZE('a ab abc abcdef database oceanbase 123 123abc', 'ik', '[{"output":"all"}]') AS tokens;
+tokens
+{"tokens": [{"abcdef": 1}, {"ab": 1}, {"123": 1}, {"a": 1}, {"oceanbase": 1}, {"database": 1}, {"123abc": 1}, {"abc": 1}], "doc_len": 8}
+SELECT TOKENIZE('中华人民共和国中华人民银行数据库全文检索一百二十三公斤', 'ik', '[{"output":"all"}]') AS tokens;
+tokens
+{"tokens": [{"公斤": 1}, {"人民银行": 1}, {"一百二十三": 1}, {"全文": 1}, {"数据库": 1}, {"中华": 1}, {"中华人民共和国": 1}, {"检索": 1}], "doc_len": 8}
+SELECT TOKENIZE('中华人民共和国中华人民银行数据库全文检索一百二十三公斤', 'ik', '[{"output":"all"},{"additional_args":[{"ik_mode":"max_word"}]}]') AS tokens;
+tokens
+{"tokens": [{"公斤": 1}, {"银行": 1}, {"数据": 1}, {"三公": 1}, {"共和国": 1}, {"人民银行": 1}, {"十三": 1}, {"人民共和国": 1}, {"国中": 1}, {"中华人民": 2}, {"共和": 1}, {"行数": 1}, {"一百二十三": 1}, {"百二": 1}, {"全文": 1}, {"二十": 1}, {"数据库": 1}, {"中华": 2}, {"中华人民共和国": 1}, {"检索": 1}, {"华人": 2}, {"库": 1}, {"人民": 2}, {"二十三": 1}], "doc_len": 28}
+SELECT TOKENIZE(CONVERT(X'0001207fc280c3bfe0a080e4b7bfe4b880e4bfbfe58080e5bfbfe68080e6bfbfe78080e7bfbfe88080e8bfbfe98080e9bfbfea8080efbfbff0908080f0a08080f48fbfbf' USING utf8mb4), 'ik', '[{"output":"all"}]') AS tokens;
+tokens
+{"tokens": [{"鿿": 1}, {"耀": 1}, {"怀": 1}, {"忿": 1}, {"翿": 1}, {"迿": 1}, {"倀": 1}, {"一": 1}, {"退": 1}, {"瀀": 1}, {"濿": 1}, {"俿": 1}], "doc_len": 12}
+SELECT TOKENIZE(CONVERT(X'0001207fc280c3bfe0a080e4b7bfe4b880e4bfbfe58080e5bfbfe68080e6bfbfe78080e7bfbfe88080e8bfbfe98080e9bfbfea8080efbfbff0908080f0a08080f48fbfbf' USING utf8mb4), 'ik', '[{"output":"all"},{"additional_args":[{"ik_mode":"max_word"}]}]') AS tokens;
+tokens
+{"tokens": [{"鿿": 1}, {"耀": 1}, {"怀": 1}, {"忿": 1}, {"翿": 1}, {"迿": 1}, {"倀": 1}, {"一": 1}, {"退": 1}, {"瀀": 1}, {"濿": 1}, {"俿": 1}], "doc_len": 12}
+SELECT TOKENIZE('é e café Straße Σ σ 日 本 한 국 Ａ １２３', 'ik', '[{"output":"all"}]') AS tokens;
+tokens
+{"tokens": [{"日": 1}, {"ａ": 1}, {"caf": 1}, {"국": 1}, {"한": 1}, {"１２３": 1}, {"本": 1}, {"e": 2}, {"stra": 1}], "doc_len": 10}
+SELECT TOKENIZE('a abc 中文 中 文 123 一百 公斤' COLLATE utf8mb4_bin, 'ik', '[{"output":"all"}]') AS tokens;
+tokens
+{"tokens": [{"abc": 1}, {"中文": 1}, {"123": 1}, {"一百": 1}, {"a": 1}, {"中": 1}, {"公斤": 1}, {"文": 1}], "doc_len": 8}

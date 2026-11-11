@@ -439,3 +439,56 @@ Raw reports: [before 1](fts-tuning-results/fts-ddl-poll-before1.txt),
 [after 2](fts-tuning-results/fts-ddl-poll-after2.txt).
 CPU observations: [before](fts-tuning-results/fts-ddl-poll-before-cpu.json),
 [after](fts-tuning-results/fts-ddl-poll-after-cpu.json).
+## Compare dictionary range characters without charset dispatch (2026-11-11)
+
+The utf8mb4_bin handler in ob_ctype_utf8.cc uses ob_strnncoll_mb_bin.
+With t_is_prefix=false, that routine compares bytes with memcmp and breaks
+ties by length. ObString::compare implements the same ordering, including
+embedded NUL and multibyte sequences. Dictionary range lookup previously
+dispatched through ObCharset::strcmp for each bound comparison, even though
+the collation was fixed to utf8mb4_bin.
+
+The local compare_range_char helper now performs that byte comparison directly
+for valid ObString arguments. Negative lengths and nonzero-length null pointers
+fall back to the original charset routine. No dictionary contents, range bounds,
+first-inclusive-bound selection, ordering fallback, token rules or word grouping
+have changed. This specialization applies only to the fixed binary range
+comparison, not general SQL collations.
+
+The release build, all 22 existing regression cases, and the new ik_range_lookup
+case passed. The new case was checked separately with expected output recorded
+using the preserved dbd858b35 executable. It covers ASCII, mixed words, Chinese
+quantities, CJK boundary characters, other scripts, supplementary characters,
+embedded NUL, utf8mb4_bin and both IK modes.
+
+A UTF-8-only subset of a temporary Unicode corpus also produced 374
+byte-identical query results, with zero SQL errors on both executables.
+Output SHA-256: f2d4b97f68de34e28abef5b1d2399da4bf0bb3076fbd518f223a37ff99356663.
+Other charset cases from the original corpus were excluded because the
+instance does not support those charsets. SQL conversion can sanitize malformed
+input, so this is not raw malformed-input coverage of the helper.
+
+Full unchanged benchmarks compared against dbd858b35:
+
+| Run | IK tokenize (ms) | IK all (s) | IK content (s) | English (s) | Total (s) |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Baseline 1 | 0.0541 | 2.282 | 1.997 | 1.077 | 5.381 |
+| Baseline 2 | 0.0568 | 2.452 | 1.965 | 1.068 | 5.512 |
+| Baseline 3 | 0.0510 | 2.358 | 1.833 | 0.991 | 5.209 |
+| Candidate 1 | 0.0509 | 2.240 | 1.785 | 1.023 | 5.075 |
+| Candidate 2 | 0.0464 | 2.202 | 1.738 | 1.015 | 4.983 |
+| Candidate 3 | 0.0490 | 2.235 | 1.809 | 1.040 | 5.111 |
+
+Mean IK tokenization decreased about 9.6%, and mean total build time about
+5.8%. These are observations on a shared host, not an official score estimate.
+Order was baseline 1-2, candidate 1-2, baseline 3, candidate 3. No compilation
+or regressions ran during timed benchmarks. Chinese query timings were slightly
+worse in the candidate runs; no query speedup is claimed. All candidate hit
+counts remained 8001/11000/7332/20. Benchmark inputs and scoring were unchanged.
+
+Raw reports: [before 1](fts-tuning-results/fts-range-cmp-before1.txt),
+[before 2](fts-tuning-results/fts-range-cmp-before2.txt),
+[before 3](fts-tuning-results/fts-range-cmp-before3.txt),
+[after 1](fts-tuning-results/fts-range-cmp-after1.txt),
+[after 2](fts-tuning-results/fts-range-cmp-after2.txt),
+[after 3](fts-tuning-results/fts-range-cmp-after3.txt).

@@ -1,0 +1,8 @@
+SET NAMES utf8mb4;
+SELECT TOKENIZE('a ab abc abcdef database oceanbase 123 123abc', 'ik', '[{"output":"all"}]') AS tokens;
+SELECT TOKENIZE('中华人民共和国中华人民银行数据库全文检索一百二十三公斤', 'ik', '[{"output":"all"}]') AS tokens;
+SELECT TOKENIZE('中华人民共和国中华人民银行数据库全文检索一百二十三公斤', 'ik', '[{"output":"all"},{"additional_args":[{"ik_mode":"max_word"}]}]') AS tokens;
+SELECT TOKENIZE(CONVERT(X'0001207fc280c3bfe0a080e4b7bfe4b880e4bfbfe58080e5bfbfe68080e6bfbfe78080e7bfbfe88080e8bfbfe98080e9bfbfea8080efbfbff0908080f0a08080f48fbfbf' USING utf8mb4), 'ik', '[{"output":"all"}]') AS tokens;
+SELECT TOKENIZE(CONVERT(X'0001207fc280c3bfe0a080e4b7bfe4b880e4bfbfe58080e5bfbfe68080e6bfbfe78080e7bfbfe88080e8bfbfe98080e9bfbfea8080efbfbff0908080f0a08080f48fbfbf' USING utf8mb4), 'ik', '[{"output":"all"},{"additional_args":[{"ik_mode":"max_word"}]}]') AS tokens;
+SELECT TOKENIZE('é e café Straße Σ σ 日 本 한 국 Ａ １２３', 'ik', '[{"output":"all"}]') AS tokens;
+SELECT TOKENIZE('a abc 中文 中 文 123 一百 公斤' COLLATE utf8mb4_bin, 'ik', '[{"output":"all"}]') AS tokens;

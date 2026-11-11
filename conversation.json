@@ -1,0 +1,223 @@
+{
+  "meta": {
+    "task": "OceanBase 2026 大赛赛题一：实现轻量向量数据库 MiniVectorDB（单机 C++，官方 JSONL stdio 协议）",
+    "period": "2026-11-09 至 2026-11-11",
+    "environment": "本地开发 Windows 11 + Git Bash + MinGW g++ 13.2；目标评测环境 Linux x86_64 容器（ubuntu:24.04，只读根文件系统，数据目录 /data）",
+    "ai_tool": "WorkBuddy 桌面端 AI Agent（会话 74d227c7，跨 3 天的连续协作记录）",
+    "scope_and_desensitization": "本文件内容全部整理自上述真实会话：用户原始输入多为赛题说明截图（在 user_prompts 中以图片占位转述，原意为图片内容本身），文字 prompt 原样引用；agent 分析与验证输出均为会话原文摘录。不包含任何访问密钥、令牌；不以外部链接替代证据；全部验证结果来自本地实际运行，未执行的内容明确标注为『计划』。无合成材料。"
+  },
+  "user_prompts": [
+    {
+      "id": "P1",
+      "date": "2026-11-09",
+      "content": "@image#1:Clipboard_Screenshot.png 任务：实现 MiniVectorDB",
+      "note": "首条任务指令：一张赛题说明截图 + 一句话"
+    },
+    {
+      "id": "P2",
+      "date": "2026-11-10",
+      "content": "@image#1..13:Clipboard_Screenshot-0..12.png 以上是题目",
+      "note": "用户补发 13 张完整赛题说明截图（提交要求、评分公式、算分规则、Agent prompt 评价等）"
+    },
+    {
+      "id": "P3",
+      "date": "2026-11-10",
+      "content": "@image#1..3:Clipboard_Screenshot.png 以上是算法规则",
+      "note": "3 张算分规则截图（总分 700 = 620 基础 + 40 性能排名 + 40 Agent Prompt 排名）"
+    },
+    {
+      "id": "P4",
+      "date": "2026-11-10",
+      "content": "我之前提交了别的分支，文本框里面留空可能出问题，还是告诉我怎么填文本框吧",
+      "note": "对『留空』建议的质疑，坚持要显式填写"
+    },
+    {
+      "id": "P5",
+      "date": "2026-11-11",
+      "content": "@image#1 @image#2 以上是提测结果和详情",
+      "note": "提测『执行失败』的反馈截图，触发对提交内容的核查"
+    }
+  ],
+  "conversations": [
+    {
+      "id": "C0",
+      "role": "student",
+      "content": "@image#1:Clipboard_Screenshot.png 任务：实现 MiniVectorDB",
+      "source": "会话起始消息"
+    },
+    {
+      "id": "C1",
+      "role": "agent",
+      "content": "这是 2026 大赛新增的独立赛题（不基于 MiniOB），网上搜不到公开包的具体内容，评测协议（SQL 语法、stdout 输出格式、持久化文件格式）都以官方公开包和配套测试驱动为准。",
+      "source": "agent 首轮分析"
+    },
+    {
+      "id": "C2",
+      "role": "student",
+      "content": "我之前提交了别的分支，文本框里面留空可能出问题，还是告诉我怎么填文本框吧",
+      "source": "对留空建议的质疑"
+    },
+    {
+      "id": "C3",
+      "role": "agent",
+      "content": "重大发现：事务内语句失败只回滚该语句，事务继续可用（UPDATE 保留、失败的 INSERT 整体丢弃、COMMIT 照常生效）。这是语句级原子性，当前实现有 bug（多行 INSERT 中途重复主键会残留已应用的前几行），必须改。",
+      "source": "研读官方 transaction_failed_insert 用例后的发现"
+    },
+    {
+      "id": "C4",
+      "role": "agent",
+      "content": "官方公开包找到了！协议是 JSONL stdin/stdout（不是纯 SQL 文本），必须主动输出 {\"type\":\"ready\"}，逐条返回带 id 的 JSON 响应。之前的纯 SQL stdin/stdout 方案不符合正式协议。",
+      "source": "定位官方 STDIO_PROTOCOL.md 后"
+    },
+    {
+      "id": "C5",
+      "role": "student",
+      "content": "@image#1 @image#2 以上是提测结果和详情",
+      "source": "提测执行失败的反馈"
+    },
+    {
+      "id": "C6",
+      "role": "agent",
+      "content": "找到问题了：minivectordb 分支上根本没有 MiniVectorDB 的代码——那次提交（c08bde24d）只包含两个 AMD 相关文件，没有 minivectordb/ 目录、没有 Dockerfile、没有 Agent Prompt 材料，所以评测机找不到东西直接执行失败。官方 4.1 节明确要求 Dockerfile 必须放在仓库根目录，conversation.json 同为根目录占位文件需选手填写。",
+      "source": "核查远程分支实际内容后的定位"
+    }
+  ],
+  "experiments": [
+    {
+      "id": "E1",
+      "title": "WAL fsync 瓶颈定位与缓冲化改造",
+      "hypothesis": "每条自动提交语句都执行 fsync 是插入吞吐瓶颈",
+      "change": "改为缓冲写 WAL：write() 保证进程重启不丢，fsync 仅在显式事务 COMMIT、批量阈值和退出时执行",
+      "output": "同一脚本下 10 万次逐条自动提交插入：49 s → 6.76 s",
+      "verified": true
+    },
+    {
+      "id": "E2",
+      "title": "输出 flush 策略与剩余开销定位",
+      "hypothesis": "逐语句 flush 的系统调用是剩余墙钟开销的主要来源",
+      "change": "依次实验：『输入缓冲为空才 flush』→ WAL 用户态缓冲（256KB 批量落盘）→ 计时探针定位 → 时间限流 flush（交互延迟≤5ms）",
+      "output": "定位过程发现墙钟与 CPU 时间严重背离（CPU 极低、墙钟 4.3s），探针覆盖仅 1.13s；最终确认 ~2.8s 为环境固定开销（见 E3），程序本身 10 万行插入+查询约 1.8s（约 18µs/行）",
+      "verified": true
+    },
+    {
+      "id": "E3",
+      "title": "对『程序变慢』的质疑与对照实验",
+      "hypothesis": "单条语句 2.85s 的耗时疑似固定开销而非查询处理开销",
+      "change": "隔离实验：空输入计时 → 与同样方式编译的 hello world 对照",
+      "output": "空输入也要 2.81s；hello world 同样 2.9s。结论：~2.8s 是 Git Bash/杀软在本机运行任何 exe 的固定开销，与程序无关，Linux 容器中不存在",
+      "verified": true
+    },
+    {
+      "id": "E4",
+      "title": "从官方用例习得语句级原子性并修复实现",
+      "hypothesis": "事务内单条语句失败应只回滚该语句，事务继续可用",
+      "change": "重写语句执行路径：失败的语句整体丢弃（含多行 INSERT 部分应用），已成功语句保留，COMMIT 照常生效",
+      "output": "transaction_failed_insert、transaction_autocommit_atomic、transaction_shutdown_rollback 用例通过（见 E6 复测）",
+      "verified": true
+    },
+    {
+      "id": "E5",
+      "title": "发现协议不匹配并按官方标准重写",
+      "hypothesis": "题面截图描述的交互方式与官方实现可能不一致，以官方题包为准",
+      "change": "定位官方 oceanbase/seekdb 2026-competition-round2 分支 STDIO_PROTOCOL.md 与 20 个公开用例；重写 main.cpp 为 JSONL 协议（启动即输出 {\"type\":\"ready\"}，响应 id 原样回传，逐行输出）",
+      "output": "本地协议驱动 run_local.py 首次全量运行即 20/20 通过",
+      "verified": true
+    },
+    {
+      "id": "E6",
+      "title": "提交前最终复测（2026-11-11，本文件撰写当日）",
+      "hypothesis": "代码在打包提交前仍应全量复测",
+      "change": "重跑全部 20 个官方公开用例与 kill -9 崩溃恢复测试",
+      "output": "run_local.py 逐用例输出 20 行 PASS，末行『20/20 passed』；kill9_test.py 输出『kill -9 crash recovery: ALL OK (200 committed rows, 2 kills, open-tx kills)』",
+      "verified": true
+    },
+    {
+      "id": "E7",
+      "title": "提测『执行失败』的排查",
+      "hypothesis": "失败原因在提交内容而非评测环境",
+      "change": "核查远程 minivectordb 分支实际提交内容（git show --stat），对照官方 4.1 节材料要求",
+      "output": "该分支提交 c08bde24d 仅含 2 个与赛题无关的文件（ai_column_result_guard.h 及其测试），无 minivectordb/、无根目录 Dockerfile、无 conversation.json。结论：材料未进入指定分支导致评测机无可执行对象",
+      "verified": true
+    }
+  ],
+  "instances": [
+    {
+      "dimension": "问题理解与自主拆解",
+      "title": "从一句话+截图到拆出协议/存储/SQL/持久化四个子问题",
+      "student_evidence": {
+        "pointer": "/conversations/1/content"
+      },
+      "result_evidence": {
+        "pointer": "/experiments/4/output"
+      },
+      "note": "先识别『评测协议以官方题包为准』再动手，避免按猜测实现"
+    },
+    {
+      "dimension": "技术理解与迁移",
+      "title": "将官方用例中的语句级原子性语义迁移到自有实现",
+      "student_evidence": {
+        "pointer": "/conversations/3/content"
+      },
+      "result_evidence": {
+        "pointer": "/experiments/3/output"
+      },
+      "note": "从官方 mysqltest 用例反推事务语义，而非照搬常见数据库行为"
+    },
+    {
+      "dimension": "独立验证与质疑",
+      "title": "对性能结论做对照实验，排除环境干扰",
+      "student_evidence": {
+        "pointer": "/experiments/2/hypothesis"
+      },
+      "result_evidence": {
+        "pointer": "/experiments/2/output"
+      },
+      "note": "用 hello world 对照证明 2.8s 为环境固定开销；对『留空』建议的质疑见 /conversations/2/content"
+    },
+    {
+      "dimension": "实验与反馈迭代",
+      "title": "49s → 6.76s → 1.8s 的三轮量化优化链",
+      "student_evidence": {
+        "pointer": "/experiments/0/output"
+      },
+      "result_evidence": {
+        "pointer": "/experiments/1/output"
+      },
+      "note": "每轮优化均有前后对比数据"
+    },
+    {
+      "dimension": "取舍与反思",
+      "title": "持久化强度与吞吐的折衷 + 提交事故复盘",
+      "student_evidence": {
+        "pointer": "/experiments/0/change"
+      },
+      "result_evidence": {
+        "pointer": "/experiments/5/output"
+      },
+      "note": "选择 write()+阈值 fsync 兼顾进程崩溃安全与吞吐；E7 复盘提交事故"
+    }
+  ],
+  "retrospective": {
+    "what_worked": [
+      "先质疑交互协议、找到官方题包再重写，避免了在错误协议上继续投入",
+      "每轮优化前先定位瓶颈（探针/对照实验），不做无依据的优化",
+      "官方公开用例本地化后作为回归集，每次改动全量复跑"
+    ],
+    "what_didnt": [
+      "首轮提交时材料未进入指定分支，导致一次提测失败（E7）",
+      "初期按题面截图实现纯 SQL 协议，与官方 JSONL 协议不符，返工了入口层"
+    ],
+    "key_lessons": [
+      "评测以官方驱动为准，任何与题面描述冲突之处以官方包为准",
+      "本地环境的绝对耗时不可直接外推（E3），只做同环境相对比较",
+      "提交前必须核验目标分支的实际内容（git show --stat / ls-tree），不能只看本地工作区"
+    ]
+  },
+  "limitations": [
+    "20 个公开用例全部通过；隐藏用例未验证（计划：提测后关注评测反馈）",
+    "计划：在 Linux 容器内以官方 protocol_check/run.py 与 mysqltest 驱动做端到端验证（本机无 Docker，本地驱动为按官方 run.py 语义自写的 run_local.py）",
+    "ANN 模式当前为精确距离计算的稳定排序实现（满足『ann 模式结果必须与精确一致』的官方要求），未实现 ANN 近似索引加速",
+    "本地计时受 Git Bash/杀软固定开销影响（约 2.8s），绝对数值仅作相对比较",
+    "向量索引（CREATE VECTOR INDEX）已实现语句解析、持久化与维护语义，未做大规模数据下的性能调优"
+  ]
+}

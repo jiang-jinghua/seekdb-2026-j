@@ -551,3 +551,53 @@ CPU observations: [before](fts-tuning-results/fts-binary-cmp-before-cpu.json),
 
 Separate character-map probing and short-character-accessor inline experiments
 did not show a stable benefit in alternating comparisons and were reverted.
+## Merge repeated word frequencies with one lookup (2026-11-12)
+
+ObAddWord previously looked up each grouped word and then looked it up again
+with set_refactored. Updating an existing word also allocated and replaced
+its hash node. The existing set_or_update interface now inserts count 1 or
+updates the existing pair in place. Both frequency accumulation and the latest
+key spelling are preserved. The latter matters when a collation considers
+different byte strings equal. Non-grouped behavior remains unchanged.
+
+The release build and all 25 selected mysqltest cases passed. The 374-query UTF-8 corpus remained byte-identical
+with no SQL errors (SHA-256
+f2d4b97f68de34e28abef5b1d2399da4bf0bb3076fbd518f223a37ff99356663).
+The beng_case_conversion regression records baseline output for repeated words,
+long words, punctuation, case conversion, collation-equivalent accent spellings,
+and indexed DML. Expected results were recorded with a17df5049.
+
+Full unchanged benchmarks against a17df5049:
+
+| Run | Total build (s) | IK tokenize (ms) | BENG tokenize (ms) |
+| --- | ---: | ---: | ---: |
+| Baseline 1 | 5.050 | 0.0482 | 0.0304 |
+| Baseline 2 | 4.827 | 0.0481 | 0.0308 |
+| Baseline 3 | 5.079 | 0.0471 | 0.0396 |
+| Candidate 1 | 5.000 | 0.0493 | 0.0396 |
+| Candidate 2 | 4.904 | 0.0455 | 0.0292 |
+| Candidate 3 | 4.988 | 0.0466 | 0.0379 |
+
+These measurements do not establish a stable end-to-end speedup. Mean build
+time changed from 4.9853 to 4.9640 seconds (about 0.4%), while mean BENG
+TOKENIZE time was worse. The structural saving is one hash traversal/lock
+instead of two, and no replacement node allocation on repeated words; an
+official score improvement is not claimed. All hit counts remained
+8001/11000/7332/20. Same corpus warmup and unchanged SKIP_LOAD=0 workload
+were used. No compiler or regression tests overlapped these timed runs.
+Order was baseline 1-2, candidate 1-2, baseline 3, candidate 3, with rejected
+experiments between the first baseline pair and final candidate pair.
+Shared-host drift remains a limitation.
+
+Raw logs: [before 1](fts-tuning-results/fts-word-frequency-before1.txt),
+[before 2](fts-tuning-results/fts-word-frequency-before2.txt),
+[before 3](fts-tuning-results/fts-word-frequency-before3.txt),
+[after 1](fts-tuning-results/fts-word-frequency-after1.txt),
+[after 2](fts-tuning-results/fts-word-frequency-after2.txt),
+[after 3](fts-tuning-results/fts-word-frequency-after3.txt).
+
+An ASCII lowercase fast path passed correctness checks but showed no stable
+benchmark benefit and was reverted. An initial single-lookup implementation
+that preserved the first equivalent key spelling failed corpus comparison;
+its measurements are excluded because that version was not semantically
+identical. The retained version preserves the last spelling.

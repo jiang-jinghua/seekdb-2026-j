@@ -1,0 +1,48 @@
+SET NAMES utf8mb4;
+SELECT HEX(LOWER(CONVERT(X'00417f5a2061c389c3a9c4b0cea3cf83e4b8adf0a08080' USING utf8mb4))) AS bytes;
+bytes
+00617F7A2061C3A9C3A969CF83CF83E4B8ADF0A08080
+SELECT LOWER('AZaz café CAFÉ İ I i Σ σ ς 中文') AS lower_text;
+lower_text
+azaz café café i i i σ σ ς 中文
+SELECT TOKENIZE('ALPHA beta GAMMA delta epsilon zeta eta theta iota kappa ALPHA beta', 'beng', '[{"output":"all"}]') AS tokens;
+tokens
+{"tokens": [{"delta": 1}, {"gamma": 1}, {"zeta": 1}, {"kappa": 1}, {"alpha": 2}, {"epsilon": 1}, {"iota": 1}, {"theta": 1}, {"eta": 1}, {"beta": 2}], "doc_len": 12}
+SELECT TOKENIZE(CONCAT(REPEAT('ALPHA beta gamma ',40),'omega'), 'beng', '[{"output":"all"}]') AS tokens;
+tokens
+{"tokens": [], "doc_len": 0}
+SELECT TOKENIZE(CONCAT('short ',REPEAT('abcdefgh',9),' tiny ',REPEAT('Z',84),' endword short ',REPEAT('Q',85)), 'beng', '[{"output":"all"}]') AS tokens;
+tokens
+{"tokens": [{"zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz": 1}, {"short": 2}, {"tiny": 1}, {"endword": 1}, {"abcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefgh": 1}], "doc_len": 6}
+SELECT TOKENIZE('...ALPHA!!! beta,gamma? /delta/ epsilon_ café Σ 中文', 'beng', '[{"output":"all"}]') AS tokens;
+tokens
+{"tokens": [{"café": 1}, {"delta": 1}, {"gamma": 1}, {"alpha": 1}, {"epsilon": 1}, {"中文": 1}, {"beta": 1}], "doc_len": 7}
+DROP TABLE IF EXISTS beng_case_conversion;
+CREATE TABLE beng_case_conversion(id INT PRIMARY KEY,title VARCHAR(200),body TEXT);
+INSERT INTO beng_case_conversion VALUES (1,'ALPHA beta',CONCAT(REPEAT('gamma delta ',20),'omega')),(2,'epsilon zeta','theta iota'),(3,'OMEGA sigma','alpha tau'),(4,'kappa lambda','short tiny');
+ALTER TABLE beng_case_conversion ADD FULLTEXT INDEX idx_beng_owned(title,body) WITH PARSER beng;
+SELECT id,MATCH(title,body) AGAINST('alpha') > 0 AS alpha_hit FROM beng_case_conversion ORDER BY id;
+id	alpha_hit
+1	1
+2	0
+3	1
+4	0
+SELECT id FROM beng_case_conversion WHERE MATCH(title,body) AGAINST('omega') ORDER BY id;
+id
+1
+3
+UPDATE beng_case_conversion SET body='replacement upsilon' WHERE id=1;
+SELECT id FROM beng_case_conversion WHERE MATCH(title,body) AGAINST('omega') ORDER BY id;
+id
+3
+DELETE FROM beng_case_conversion WHERE id=3;
+SELECT id FROM beng_case_conversion WHERE MATCH(title,body) AGAINST('alpha') ORDER BY id;
+id
+1
+DROP TABLE beng_case_conversion;
+SELECT TOKENIZE(_utf8mb4'É é e E Ç ç c C' COLLATE utf8mb4_general_ci, 'beng', '[{"output":"all"}]') AS tokens;
+tokens
+{"tokens": [], "doc_len": 0}
+SELECT TOKENIZE(_utf8mb4'E e é É C c ç Ç' COLLATE utf8mb4_general_ci, 'beng', '[{"output":"all"}]') AS tokens;
+tokens
+{"tokens": [], "doc_len": 0}

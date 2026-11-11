@@ -492,3 +492,62 @@ Raw reports: [before 1](fts-tuning-results/fts-range-cmp-before1.txt),
 [after 1](fts-tuning-results/fts-range-cmp-after1.txt),
 [after 2](fts-tuning-results/fts-range-cmp-after2.txt),
 [after 3](fts-tuning-results/fts-range-cmp-after3.txt).
+## Compare binary strings without collation dispatch (2026-11-11)
+
+For CS_TYPE_BINARY, ob_strnncoll_binary compares bytes with memcmp and then
+returns the length difference. ob_strnncollsp_binary delegates to that same
+function and ignores the end-space policy. ObCharset::strcmp and strcmpsp now
+perform this exact operation directly for valid binary arguments, avoiding
+charset validation/lookup and indirect dispatch.
+
+This also removes the redundant preliminary short-string equality comparison
+for unequal binary strings in strcmpsp. The existing short equality path is
+retained for utf8mb4_bin and utf8mb4_general_ci. Other collations and invalid
+arguments retain the original path. Zero-length inputs do not call memcmp.
+No padding, case-folding, dictionary, serialization or index rules changed.
+
+The release build and 24 mysqltest cases passed: the previous 23 cases and
+the new subquery.binary_string_order case. Its expected output was recorded
+with the preserved dc34e3838 executable. It covers NULL/empty values,
+length/prefix ordering, embedded NUL, trailing spaces, high bytes, 32/33-byte
+boundaries, ascending/descending sort, grouping, joins, window functions and
+STRCMP. A 374-query UTF-8 corpus also produced byte-identical output with
+zero SQL errors on both versions. Its output SHA-256 remained
+f2d4b97f68de34e28abef5b1d2399da4bf0bb3076fbd518f223a37ff99356663.
+
+Full unchanged benchmarks compared against dc34e3838:
+
+| Run | IK all (s) | IK content (s) | English (s) | Total (s) |
+| --- | ---: | ---: | ---: | ---: |
+| Baseline 1 | 2.280 | 1.831 | 1.016 | 5.156 |
+| Baseline 2 | 2.388 | 1.806 | 1.037 | 5.258 |
+| Baseline 3 | 2.312 | 1.673 | 0.927 | 4.919 |
+| Candidate 1 | 2.053 | 1.612 | 0.965 | 4.637 |
+| Candidate 2 | 2.055 | 1.672 | 0.910 | 4.643 |
+| Candidate 3 | 2.125 | 1.626 | 0.904 | 4.662 |
+
+Mean total construction fell from 5.1110 to 4.6473 seconds (about 9.1%).
+The first two whole-benchmark process CPU observations were
+13.56/13.12 seconds for baseline and 11.97/12.07 for candidate. These CPU
+figures include tokenization, queries and background work and do not isolate
+the comparison routine.
+
+Run order was baseline 1-2, candidate 1-2, baseline 3, candidate 3. Each server
+ran the same functional corpus before timing to prepare dictionary caches.
+Data loading and all index builds remained included (SKIP_LOAD=0); benchmark
+data, SQL, counts and scoring files were unchanged. Compilation and regression
+runs did not overlap timed benchmarks. All candidate hit counts remained
+8001/11000/7332/20. Shared-host drift remains a limitation, and these figures
+do not establish an official score increase.
+
+Raw reports: [before 1](fts-tuning-results/fts-binary-cmp-before1.txt),
+[before 2](fts-tuning-results/fts-binary-cmp-before2.txt),
+[before 3](fts-tuning-results/fts-binary-cmp-before3.txt),
+[after 1](fts-tuning-results/fts-binary-cmp-after1.txt),
+[after 2](fts-tuning-results/fts-binary-cmp-after2.txt),
+[after 3](fts-tuning-results/fts-binary-cmp-after3.txt).
+CPU observations: [before](fts-tuning-results/fts-binary-cmp-before-cpu.json),
+[after](fts-tuning-results/fts-binary-cmp-after-cpu.json).
+
+Separate character-map probing and short-character-accessor inline experiments
+did not show a stable benefit in alternating comparisons and were reverted.

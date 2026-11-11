@@ -1,0 +1,13 @@
+SET NAMES utf8mb4;
+--disable_warnings
+DROP TABLE IF EXISTS binary_sort_strings;
+--enable_warnings
+CREATE TABLE binary_sort_strings(id INT PRIMARY KEY,s VARBINARY(96));
+INSERT INTO binary_sort_strings VALUES (1,NULL),(2,X''),(3,X'00'),(4,X'0000'),(5,X'20'),(6,X'2000'),(7,X'61'),(8,X'6100'),(9,X'6120'),(10,X'612020'),(11,X'ff'),(12,X'ff00'),(13,REPEAT(X'61',33)),(14,CONCAT(REPEAT(X'61',32),X'00')),(15,REPEAT(X'61',32)),(16,X'41'),(17,X'7f80ff'),(18,X'4142004344'),(19,X'61'),(20,NULL);
+SELECT id,CONCAT('[',HEX(s),']') AS bytes FROM binary_sort_strings ORDER BY s,id;
+SELECT id,CONCAT('[',HEX(s),']') AS bytes FROM binary_sort_strings ORDER BY s DESC,id DESC LIMIT 10;
+SELECT HEX(s),COUNT(*) AS cnt FROM binary_sort_strings GROUP BY s ORDER BY s;
+SELECT a.id,b.id FROM binary_sort_strings a JOIN binary_sort_strings b ON a.s=b.s WHERE a.id IN (3,7,9,15) ORDER BY a.id,b.id;
+SELECT id,ROW_NUMBER() OVER (PARTITION BY s ORDER BY id) AS rn FROM binary_sort_strings ORDER BY id;
+SELECT STRCMP(CAST(X'6120' AS BINARY),CAST(X'61' AS BINARY)) AS trailing_space,STRCMP(CAST(X'6100' AS BINARY),CAST(X'61' AS BINARY)) AS trailing_zero,STRCMP(CAST(X'ff' AS BINARY),CAST(X'7f' AS BINARY)) AS high_byte;
+DROP TABLE binary_sort_strings;

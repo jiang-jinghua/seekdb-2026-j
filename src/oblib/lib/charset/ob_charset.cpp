@@ -550,6 +550,13 @@ int ObCharset::strcmp(ObCollationType collation_type,
                       const char *str2,
                       int64_t str2_len)
 {
+  // The binary collation compares bytes and length, without space padding.
+  if (collation_type == CS_TYPE_BINARY && str1_len >= 0 && str2_len >= 0
+      && (str1 != nullptr || str1_len == 0) && (str2 != nullptr || str2_len == 0)) {
+    const int64_t length = min(str1_len, str2_len);
+    const int cmp = length == 0 ? 0 : MEMCMP(str1, str2, length);
+    return cmp != 0 ? cmp : static_cast<int>(str1_len - str2_len);
+  }
   int result = 0;
   if (is_argument_valid(collation_type, str1, str1_len, str2, str2_len)) {
     const ObCharsetInfo *cs = get_charset(collation_type);
@@ -570,12 +577,19 @@ int ObCharset::strcmpsp(ObCollationType collation_type,
                         int64_t str2_len,
                         bool cmp_endspace)
 {
+  // The binary collation compares bytes and length, without space padding.
+  if (collation_type == CS_TYPE_BINARY && str1_len >= 0 && str2_len >= 0
+      && (str1 != nullptr || str1_len == 0) && (str2 != nullptr || str2_len == 0)) {
+    const int64_t length = min(str1_len, str2_len);
+    const int cmp = length == 0 ? 0 : MEMCMP(str1, str2, length);
+    return cmp != 0 ? cmp : static_cast<int>(str1_len - str2_len);
+  }
   // Identical short byte strings compare equal for these collations, with
   // either end-space policy. Bound the extra byte check so unequal long
   // strings retain the original single collation pass.
   if (str1_len == str2_len && str1_len >= 0 && str1_len <= 32
       && str1 != nullptr && str2 != nullptr
-      && (collation_type == CS_TYPE_BINARY || collation_type == CS_TYPE_UTF8MB4_BIN
+      && (collation_type == CS_TYPE_UTF8MB4_BIN
           || collation_type == CS_TYPE_UTF8MB4_GENERAL_CI)
       && (str1 == str2 || MEMCMP(str1, str2, str1_len) == 0)) {
     return 0;

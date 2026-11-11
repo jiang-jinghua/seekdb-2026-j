@@ -91,7 +91,7 @@ void* seekdb_cuvs_build(const float* base, long n, long dim)
   if (cuvsCagraIndexParamsCreate(&h->ip) != CUVS_SUCCESS) goto fail_res;
   h->ip->build_algo = NN_DESCENT;
   h->ip->graph_degree = 128;
-  h->ip->intermediate_graph_degree = 160;
+  h->ip->intermediate_graph_degree = 128;
   // Preserve graph density; offset bounded refinement with a wider search.
   h->ip->nn_descent_niter = 35;
   if (cuvsCagraIndexCreate(&h->idx)      != CUVS_SUCCESS) goto fail_ip;
@@ -127,7 +127,7 @@ int seekdb_cuvs_search(void* handle, const float* query, long nq, long topk,
     if (cuvsCagraSearchParamsCreate(&sp) != CUVS_SUCCESS) { rc=14; goto done; }
     {
       size_t required_itopk = (size_t)topk * 4;
-      if (required_itopk < 1024) required_itopk = 1024;
+      if (required_itopk < 2048) required_itopk = 2048;
       if (sp->itopk_size < required_itopk) sp->itopk_size = required_itopk;
       sp->search_width = 4;
       sp->algo = MULTI_CTA;

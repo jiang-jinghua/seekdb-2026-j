@@ -297,3 +297,45 @@ Raw reports: [before 1](fts-tuning-results/fts-streq-before1.txt),
 [after 1](fts-tuning-results/fts-streq-after1.txt),
 [after 2](fts-tuning-results/fts-streq-after2.txt),
 [after 3](fts-tuning-results/fts-streq-after3.txt).
+## Remove expired IK matches directly (2026-11-11)
+
+The CJK and quantifier processors previously removed a failed dictionary hit
+with ObList::erase(value). That operation searches from the list head even
+though the processing loop already has the node iterator. It also frees the
+current node before the loop advances that iterator. An arena can hide that
+invalid access by retaining the freed memory.
+
+Both loops now advance the iterator before processing the current hit and
+erase by its saved iterator. Removal is constant-time and advancement never
+reads a removed node. Dictionary matching, token generation and ordering
+remain unchanged.
+
+The release build and all 21 regression cases passed: 19 fts_index cases and
+two subquery sorting cases. The new ik_hit_erase test covers overlapping
+Chinese words, quantities, repeated text, mixed-script boundaries and smart
+and max_word modes. Expected output was recorded with the 9ff901a76 executable.
+The tests verify SQL output equivalence; no sanitizer build was run.
+
+Full unchanged benchmarks against the preserved 9ff901a76 executable:
+
+| Metric | Baseline 1 | Baseline 2 | Candidate 1 | Candidate 2 |
+| --- | ---: | ---: | ---: | ---: |
+| IK tokenize (ms) | 0.0514 | 0.0508 | 0.0507 | 0.0484 |
+| IK all index (s) | 2.467 | 2.336 | 2.445 | 2.327 |
+| IK content index (s) | 1.853 | 1.958 | 1.838 | 1.856 |
+| English index (s) | 1.041 | 1.052 | 1.042 | 1.066 |
+| Total build (s) | 5.385 | 5.374 | 5.355 | 5.278 |
+
+Mean IK tokenization decreased about 3.0%, and mean total build time about
+1.2%. These small differences may include shared-host timing noise. The two
+baseline runs preceded the two candidate runs, without concurrent regression
+or compilation. All candidate hit counts remained 8001/11000/7332/20.
+No official score improvement is established.
+
+Raw reports: [before 1](fts-tuning-results/fts-hit-erase-before1.txt),
+[before 2](fts-tuning-results/fts-hit-erase-before2.txt),
+[after 1](fts-tuning-results/fts-hit-erase-after1.txt),
+[after 2](fts-tuning-results/fts-hit-erase-after2.txt).
+
+A separate experiment sharing the scan-time UTF-8 fast path with arbitration
+output did not show a clear tokenization benefit and was reverted.

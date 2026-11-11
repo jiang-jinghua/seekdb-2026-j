@@ -39,9 +39,10 @@ int ObIKCJKProcessor::do_process(TokenizeContext &ctx,
   if (ObFTCharUtil::CharType::USELESS != type) {
     // handle previous hits_ first and then check from this char
     for (ObList<ObDATrieHit, ObIAllocator>::iterator iter = hits_.begin();
-         OB_SUCC(ret) && iter != hits_.end();
-         iter++) {
-      ObDATrieHit &hit = *iter;
+         OB_SUCC(ret) && iter != hits_.end();) {
+      // Save the successor before erase: the node allocator may free it.
+      auto current = iter++;
+      ObDATrieHit &hit = *current;
       if (OB_FAIL(dict_main_.match_with_hit({char_len, ch}, hit, hit))) {
       } else if (hit.is_match()) {
         if (OB_FAIL(ctx.add_token(ctx.fulltext(),
@@ -55,7 +56,7 @@ int ObIKCJKProcessor::do_process(TokenizeContext &ctx,
       } else if (hit.is_prefix()) {
         // nothing
       } else if (hit.is_unmatch()) {
-        hits_.erase(hit);
+        hits_.erase(current);
       } else {
         ret = OB_UNEXPECT_INTERNAL_ERROR;
       }

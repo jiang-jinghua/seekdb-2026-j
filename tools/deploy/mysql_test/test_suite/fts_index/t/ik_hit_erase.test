@@ -1,0 +1,8 @@
+SET NAMES utf8mb4;
+SELECT TOKENIZE('中华人民共和国中华人民共和中人民银行人民币人民群众', 'ik', '[{"output":"all"}]') AS tokens;
+SELECT TOKENIZE('中华人民共和国中华人民共和中人民银行人民币人民群众', 'ik', '[{"output":"all"},{"additional_args":[{"ik_mode":"max_word"}]}]') AS tokens;
+SELECT TOKENIZE('一百二十三公斤一千二百三十四米十二个月三十个人五十公里', 'ik', '[{"output":"all"}]') AS tokens;
+SELECT TOKENIZE('一百二十三公斤一千二百三十四米十二个月三十个人五十公里', 'ik', '[{"output":"all"},{"additional_args":[{"ik_mode":"max_word"}]}]') AS tokens;
+SELECT MD5(CAST(TOKENIZE(REPEAT('中华人民共和国中华人民共和中人民银行人民币人民群众 ', 10), 'ik', '[{"output":"all"}]') AS CHAR)) AS tokens_digest;
+SELECT MD5(CAST(TOKENIZE(REPEAT('一百二十三公斤一千二百三十四米十二个月三十个人五十公里 ', 10), 'ik', '[{"output":"all"},{"additional_args":[{"ik_mode":"max_word"}]}]') AS CHAR)) AS tokens_digest;
+SELECT TOKENIZE('中华abc人民123共和!一百-二十_公斤', 'ik', '[{"output":"all"}]') AS tokens;

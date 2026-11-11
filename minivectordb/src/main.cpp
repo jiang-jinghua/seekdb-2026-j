@@ -9,12 +9,17 @@
 #include <cctype>
 #include <cstring>
 #include <iostream>
+#include <memory>
 #include <string>
 
 #include "common.h"
 #include "engine.h"
 #include "json.h"
 #include "parser.h"
+
+#ifndef _WIN32
+#include <unistd.h> // _exit
+#endif
 
 #ifdef _WIN32
 #include <fcntl.h>
@@ -123,7 +128,16 @@ int main(int argc, char** argv) {
     }
     fprintf(stderr, "[minivectordb] starting, data dir=%s\n", dir.c_str());
 
-    Engine eng(dir);
+    // recovery/IO errors at startup must not terminate the process without a trace:
+    // judge would report "exited before response". Report on stderr and exit non-zero
+    // with the reason visible.
+    std::unique_ptr<Engine> eng;
+    try {
+        eng = std::make_unique<Engine>(dir);
+    } catch (const std::exception& e) {
+        fprintf(stderr, "[minivectordb] startup failed: %s\n", e.what());
+        return 1;
+    }
 
     // handshake BEFORE reading the first request
     emit_line("{\"type\":\"ready\"}");
@@ -138,7 +152,7 @@ int main(int argc, char** argv) {
         if (!nonws) continue;
         try {
             Request req = json::parse_line(line);
-            handle_request(eng, req);
+            handle_request(*eng, req);
         } catch (const JsonParseError& e) {
             // id unknown; the judge always sends valid JSON
             fprintf(stderr, "[minivectordb] bad request JSON: %s\n", e.what());
@@ -146,6 +160,10 @@ int main(int argc, char** argv) {
         }
     }
     // EOF without shutdown: flush and exit cleanly
-    eng.shutdown();
+    try {
+        eng->shutdown();
+    } catch (const std::exception& e) {
+        fprintf(stderr, "[minivectordb] shutdown flush failed: %s\n", e.what());
+    }
     return 0;
 }

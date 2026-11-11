@@ -339,3 +339,50 @@ Raw reports: [before 1](fts-tuning-results/fts-hit-erase-before1.txt),
 
 A separate experiment sharing the scan-time UTF-8 fast path with arbitration
 output did not show a clear tokenization benefit and was reverted.
+## Copy words already in lowercase (2026-11-11)
+
+ObAddWord previously allocated a buffer and invoked the charset lowercase
+routine for every accepted word. For UTF-8 input containing only ASCII
+without uppercase A-Z and valid U+4E00..U+9FFF characters, the result is already
+known. The new path copies the bytes into the same caller-owned allocator
+without Unicode case conversion. It does not borrow parser-owned buffers or
+change hash grouping and representative-key behavior.
+
+Uppercase ASCII, other Unicode characters, malformed sequences and other
+charsets retain the original conversion. Charset identity is cached once per
+ObAddWord instance. Character selection matches the restricted CJK block
+already used by the IK scanning fast path.
+
+The release build and 22 mysqltest cases passed. The new lowercase_fast_path
+test compares output against the preserved b00ef3d97 executable for ASCII
+case mixtures, Chinese, CJK boundary characters, accented Latin, German and
+Turkish letters, Greek sigma, utf8mb4_bin, embedded NUL and both IK modes.
+No non-UTF-8 runtime test was available on this instance.
+
+Full unchanged benchmarks used the same private instance. Order was baseline
+1-2, candidate 1-2, baseline 3, candidate 3, without concurrent compilation or
+regressions. Each run used 20,000 rows, batch 500, 3,000 tokenization rounds,
+200 query rounds, three samples, warmup 30 and SKIP_LOAD=0.
+
+| Run | IK tokenize (ms) | IK all (s) | IK content (s) | English (s) | Total (s) |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Baseline 1 | 0.0593 | 2.340 | 1.821 | 1.022 | 5.190 |
+| Baseline 2 | 0.0518 | 2.633 | 1.821 | 1.021 | 5.481 |
+| Baseline 3 | 0.0521 | 2.536 | 1.821 | 0.919 | 5.283 |
+| Candidate 1 | 0.0481 | 2.235 | 1.821 | 0.919 | 4.981 |
+| Candidate 2 | 0.0502 | 2.119 | 1.718 | 1.023 | 4.868 |
+| Candidate 3 | 0.0503 | 2.335 | 1.922 | 1.018 | 5.282 |
+
+The median of the three run-level IK averages fell from 0.0521 to 0.0502 ms
+(about 3.6%). Baseline 1 was notably slower in tokenization; it is retained
+here rather than excluded. Construction and query timings varied, including
+a Chinese query slowdown in the candidate runs. These observations do not
+establish a stable overall speedup or an official score increase.
+All candidate hit counts remained 8001/11000/7332/20.
+
+Raw reports: [before 1](fts-tuning-results/fts-lowercase-before1.txt),
+[before 2](fts-tuning-results/fts-lowercase-before2.txt),
+[before 3](fts-tuning-results/fts-lowercase-before3.txt),
+[after 1](fts-tuning-results/fts-lowercase-after1.txt),
+[after 2](fts-tuning-results/fts-lowercase-after2.txt),
+[after 3](fts-tuning-results/fts-lowercase-after3.txt).

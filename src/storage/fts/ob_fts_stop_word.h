@@ -133,6 +133,7 @@ private:
   int64_t min_token_size_;
   int64_t max_token_size_;
   ObAddWordFlag flag_;
+  const bool is_utf8_;
 };
 
 } // end namespace storage

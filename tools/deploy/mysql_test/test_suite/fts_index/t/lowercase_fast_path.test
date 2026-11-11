@@ -1,0 +1,9 @@
+SET NAMES utf8mb4;
+SELECT TOKENIZE('alpha alpha ALPHA aLpHa beta beta123 BETA123', 'space', '[{"output":"all"}]') AS tokens;
+SELECT TOKENIZE('数据库 数据库 Database DATABASE 数据库database 数据库DATABASE', 'space', '[{"output":"all"}]') AS tokens;
+SELECT TOKENIZE(CONVERT(X'e4b7bf20e4b88020e9bfbf20ea808020efbca120f0a08080' USING utf8mb4), 'space', '[{"output":"all"}]') AS tokens;
+SELECT TOKENIZE('café CAFÉ Straße STRASSE İ I i Σ σ ς', 'space', '[{"output":"all"}]') AS tokens;
+SELECT TOKENIZE('alpha ALPHA 数据库 café CAFÉ' COLLATE utf8mb4_bin, 'space', '[{"output":"all"}]') AS tokens;
+SELECT TOKENIZE(CONVERT(X'6162006364204142004344' USING utf8mb4), 'space', '[{"output":"all"}]') AS tokens;
+SELECT TOKENIZE('数据库 Database DATABASE 数据库database 数据库DATABASE', 'ik', '[{"output":"all"}]') AS tokens;
+SELECT TOKENIZE('数据库 Database DATABASE 数据库database 数据库DATABASE', 'ik', '[{"output":"all"},{"additional_args":[{"ik_mode":"max_word"}]}]') AS tokens;

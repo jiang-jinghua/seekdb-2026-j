@@ -124,7 +124,8 @@ ObAddWord::ObAddWord(
     stopword_cnt_(0),
     min_token_size_(property.min_token_size_),
     max_token_size_(property.max_token_size_),
-    flag_(flag)
+    flag_(flag),
+    is_utf8_(ObCharset::charset_type_by_coll(meta.get_collation_type()) == CHARSET_UTF8MB4)
 {
 }
 
@@ -158,6 +159,33 @@ bool ObAddWord::is_min_max_word(const int64_t c_len) const
   return flag_.min_max_word() && (c_len < min_token_size_ || c_len > max_token_size_);
 }
 
+namespace
+{
+// These valid UTF-8 characters have no lowercase mapping. All other bytes
+// must use the charset implementation, including malformed input.
+bool is_lowercase_utf8_word(const ObString &word)
+{
+  const auto *bytes = reinterpret_cast<const unsigned char *>(word.ptr());
+  for (int64_t i = 0; i < word.length();) {
+    const unsigned char c = bytes[i];
+    if (c < 0x80) {
+      if (c >= 'A' && c <= 'Z') {
+        return false;
+      }
+      ++i;
+    } else if (word.length() - i >= 3 && c >= 0xE4 && c <= 0xE9
+               && (bytes[i + 1] & 0xC0) == 0x80 && (bytes[i + 2] & 0xC0) == 0x80
+               && (c > 0xE4 || bytes[i + 1] >= 0xB8)) {
+      // U+4E00..U+9FFF; UTF-8 validity follows from the restricted range.
+      i += 3;
+    } else {
+      return false;
+    }
+  }
+  return true;
+}
+} // namespace
+
 int ObAddWord::casedown_word(const ObFTWord &src, ObFTWord &dst)
 {
   int ret = OB_SUCCESS;
@@ -165,12 +193,13 @@ int ObAddWord::casedown_word(const ObFTWord &src, ObFTWord &dst)
     ret = OB_INVALID_ARGUMENT;
   } else if (flag_.casedown()) {
     ObString dst_str;
-    if (OB_FAIL(ObCharset::tolower(
-                    word_meta_.get_collation_type(),
-                    src.get_word().get_string(),
-                    dst_str,
-                    allocator_))) {
+    if (is_utf8_ && is_lowercase_utf8_word(src.get_word().get_string())) {
+      ret = ob_write_string(allocator_, src.get_word().get_string(), dst_str);
     } else {
+      ret = ObCharset::tolower(word_meta_.get_collation_type(),
+                              src.get_word().get_string(), dst_str, allocator_);
+    }
+    if (OB_SUCC(ret)) {
       ObFTWord tmp(dst_str.length(), dst_str.ptr(), word_meta_);
       dst = tmp;
     }

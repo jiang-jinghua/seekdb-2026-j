@@ -58,7 +58,9 @@ int ObDDLExecutorUtil::wait_ddl_finish(const int64_t task_id,
     const bool is_support_cancel)
 {
   int ret = OB_SUCCESS;
-  const int64_t retry_interval = 100 * 1000;
+  // Poll completed DDL promptly; completion and schema visibility checks below
+  // remain authoritative.
+  const int64_t retry_interval = 20 * 1000;
   ObAddr unused_addr;
   bool is_table_exist = false;
   int64_t unused_user_msg_len = 0;

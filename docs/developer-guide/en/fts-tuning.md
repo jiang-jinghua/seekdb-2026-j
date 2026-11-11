@@ -386,3 +386,56 @@ Raw reports: [before 1](fts-tuning-results/fts-lowercase-before1.txt),
 [after 1](fts-tuning-results/fts-lowercase-after1.txt),
 [after 2](fts-tuning-results/fts-lowercase-after2.txt),
 [after 3](fts-tuning-results/fts-lowercase-after3.txt).
+## Reduce synchronous DDL completion detection latency (2026-11-11)
+
+ObDDLExecutorUtil::wait_ddl_finish polled the persisted DDL error/completion
+record every 100 ms. It now polls every 20 ms, reducing the maximum delay
+between task completion and the next check. This is the general DDL waiting
+path used by ALTER TABLE ADD FULLTEXT INDEX; it also affects other callers
+of wait_ddl_finish. The separate index-executor and retry-task intervals are
+unchanged.
+
+The persisted completion result remains authoritative. Published-schema
+visibility checks, return-code forwarding, cancellation, session checks and
+server-stop handling are unchanged. More frequent polling trades additional
+metadata checks for lower synchronous completion latency; this change does
+not accelerate the underlying sorting or tokenization.
+
+Release build and 22 regression cases passed. One sorting comparison initially
+failed because restoring its Windows working copy introduced CRLF into the
+Linux expected-output file; after LF normalization that single case passed
+on rerun. The final candidate subsequently passed all 22 cases together.
+No timeout or cancellation fault injection was performed.
+
+Two unchanged full benchmark runs against preserved c513ad270 and two runs
+with this change measured:
+
+| Metric | Baseline 1 | Baseline 2 | Candidate 1 | Candidate 2 |
+| --- | ---: | ---: | ---: | ---: |
+| IK all index (s) | 2.460 | 2.331 | 2.313 | 2.244 |
+| IK content index (s) | 1.855 | 1.846 | 1.804 | 1.810 |
+| English index (s) | 1.046 | 1.059 | 1.024 | 1.087 |
+| Total build (s) | 5.389 | 5.265 | 5.166 | 5.169 |
+| Whole benchmark server CPU (s) | 13.73 | 13.33 | 13.37 | 13.27 |
+
+Mean total build time decreased about 3.0%. The server CPU figures are
+/proc process user+system CPU deltas over the entire benchmark, including
+queries, background work and tokenization; they do not isolate polling cost.
+They show no CPU increase in this small workload, not a general scalability
+guarantee. Tokenization timings were worse in the candidate runs, and overall
+official-score improvement is not established. All candidate hit counts stayed
+8001/11000/7332/20.
+
+Baseline runs preceded candidate runs on a shared host, without concurrent
+compilation or regressions. Other candidate experiments ran between the two
+groups, so host drift is a limitation. Benchmark data, SQL and scoring files
+were unchanged. Acquiring sort-descriptor array storage outside the comparison
+loop and shortening the separate index-executor polling interval did not show
+a stable benefit and were reverted.
+
+Raw reports: [before 1](fts-tuning-results/fts-ddl-poll-before1.txt),
+[before 2](fts-tuning-results/fts-ddl-poll-before2.txt),
+[after 1](fts-tuning-results/fts-ddl-poll-after1.txt),
+[after 2](fts-tuning-results/fts-ddl-poll-after2.txt).
+CPU observations: [before](fts-tuning-results/fts-ddl-poll-before-cpu.json),
+[after](fts-tuning-results/fts-ddl-poll-after-cpu.json).

@@ -257,3 +257,43 @@ Raw reports: [before 1](fts-tuning-results/fts-checksum-before1.txt),
 [before 2](fts-tuning-results/fts-checksum-before2.txt),
 [after 1](fts-tuning-results/fts-checksum-after1.txt),
 [after 2](fts-tuning-results/fts-checksum-after2.txt).
+
+## Short identical string comparisons (2026-11-11)
+
+A user-local CPU sampling profile of index construction identified string
+collation comparisons in sorting as a substantial cost. ObCharset::strcmpsp
+now returns equality directly for identical non-null byte strings of at most
+32 bytes under binary, utf8mb4_bin and utf8mb4_general_ci collations.
+Identical bytes compare equal under either end-space policy. Unequal strings,
+longer strings, other collations and invalid arguments retain the existing
+collation path. The length bound limits the extra comparison cost on misses.
+
+The release build and 20 mysqltest cases passed: all 18 fts_index cases,
+order_by_subquery and the new sort_short_strings case. The new case covers
+embedded NUL, empty strings, trailing spaces, Unicode, the length boundary,
+unequal strings, collation-sensitive ordering, NULLs, LIMIT and window sorting.
+Expected output was recorded with the unchanged executable.
+
+Full unchanged benchmarks on the same private server measured:
+
+| Run | IK all (s) | IK content (s) | English (s) | Total (s) |
+| --- | ---: | ---: | ---: | ---: |
+| Baseline 1 | 2.543 | 2.049 | 1.253 | 5.874 |
+| Baseline 2 | 2.533 | 2.047 | 1.245 | 5.855 |
+| Candidate 1 | 2.546 | 1.959 | 1.043 | 5.575 |
+| Candidate 2 | 2.428 | 1.944 | 1.155 | 5.553 |
+| Candidate 3 | 2.341 | 1.847 | 1.059 | 5.274 |
+
+Mean total build time fell from 5.8645 to 5.4673 seconds (about 6.8%).
+All candidate hit counts remained 8001/11000/7332/20. Run order was candidate
+1-2, baseline 1-2, candidate 3; this was not randomized. Shared-host noise
+remains a limitation, and these local results do not establish an official
+score improvement. No profiler was active during these timed runs.
+The baseline was an exact rebuild of 1e4048e7f. No benchmark or scoring
+configuration was changed.
+
+Raw reports: [before 1](fts-tuning-results/fts-streq-before1.txt),
+[before 2](fts-tuning-results/fts-streq-before2.txt),
+[after 1](fts-tuning-results/fts-streq-after1.txt),
+[after 2](fts-tuning-results/fts-streq-after2.txt),
+[after 3](fts-tuning-results/fts-streq-after3.txt).

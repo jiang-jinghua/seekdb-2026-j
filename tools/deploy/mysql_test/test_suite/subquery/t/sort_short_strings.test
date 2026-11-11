@@ -1,0 +1,15 @@
+SET NAMES utf8mb4;
+SELECT STRCMP('alpha','alpha') AS eq, STRCMP('alpha','ALPHA') AS ci, STRCMP('alpha','beta') AS neq;
+SELECT STRCMP(CONVERT(X'610062' USING utf8mb4),CONVERT(X'610062' USING utf8mb4)) AS nul_equal;
+SELECT STRCMP('','') AS empty_equal,STRCMP('alpha','alpha ') AS pad_equal;
+SELECT STRCMP(REPEAT('a',32),REPEAT('a',32)) AS bound_equal,STRCMP(REPEAT('a',33),REPEAT('a',33)) AS long_equal;
+SELECT STRCMP(REPEAT('a',31),CONCAT(REPEAT('a',30),'b')) AS bound_different;
+SELECT STRCMP(CONVERT(X'e695b0e68daee5ba93' USING utf8mb4),CONVERT(X'e695b0e68daee5ba93' USING utf8mb4)) AS unicode_equal;
+DROP TABLE IF EXISTS sort_short_strings;
+CREATE TABLE sort_short_strings(id INT PRIMARY KEY, s VARCHAR(80) COLLATE utf8mb4_general_ci,n INT);
+INSERT INTO sort_short_strings VALUES (1,NULL,NULL),(2,'alpha',2),(3,'ALPHA',1),(4,'alpha ',NULL),(5,'beta',2),(6,'',0),(7,CONVERT(X'610062' USING utf8mb4),2),(8,CONVERT(X'636166c3a9' USING utf8mb4),1),(9,'cafe',1),(10,REPEAT('a',33),3);
+SELECT id,HEX(s),n FROM sort_short_strings ORDER BY s,n DESC,id;
+SELECT id,HEX(s),n FROM sort_short_strings ORDER BY s COLLATE utf8mb4_bin,n,id DESC;
+SELECT id FROM sort_short_strings ORDER BY n DESC,s DESC,id LIMIT 5;
+SELECT id,ROW_NUMBER() OVER (PARTITION BY n ORDER BY s,id) AS rn FROM sort_short_strings ORDER BY id;
+DROP TABLE sort_short_strings;

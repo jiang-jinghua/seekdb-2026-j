@@ -601,3 +601,44 @@ benchmark benefit and was reverted. An initial single-lookup implementation
 that preserved the first equivalent key spelling failed corpus comparison;
 its measurements are excluded because that version was not semantically
 identical. The retained version preserves the last spelling.
+
+## Avoid an unused allocator in same-charset stopword checks (2026-11-12)
+
+For valid UTF-8 collations, charset_convert with default flags simply borrows
+input. Stopword checks now build the temporary UTF-8/general-ci lookup key
+directly, avoiding a per-token arena construction/destruction and conversion
+dispatch. Other collations still use charset_convert, with its allocator alive
+through lookup. Membership result handling and stopword contents are unchanged.
+
+Release build and all 25 selected mysqltest cases passed. The 374-query corpus
+was byte-identical to bbc5649f5 with zero SQL errors. Explicit general-ci and
+binary UTF-8 stopword queries also matched. Latin1 and GBK queries were rejected
+by both versions as unsupported by this instance; they do not constitute
+cross-charset runtime coverage. The non-UTF-8 conversion path was preserved.
+
+Full unchanged benchmarks (SKIP_LOAD=0) against bbc5649f5:
+
+| Run | Build total (s) | IK tokenize (ms) | BENG tokenize (ms) |
+| --- | ---: | ---: | ---: |
+| Baseline 1 | 5.057 | 0.0469 | 0.0342 |
+| Baseline 2 | 4.990 | 0.0477 | 0.0438 |
+| Baseline 3 | 5.055 | 0.0479 | 0.0346 |
+| Candidate 1 | 4.927 | 0.0447 | 0.0325 |
+| Candidate 2 | 4.940 | 0.0470 | 0.0347 |
+| Candidate 3 | 4.821 | 0.0468 | 0.0336 |
+
+Mean build time fell from 5.0340 to 4.8960 seconds (about 2.7%). Whole-benchmark
+process CPU for the first two runs was 12.82/13.01 seconds before and
+12.51/12.51 after. These include background activity and do not isolate the
+stopword function. Shared-host variation prevents an official score prediction.
+All four hit counts remained 8001/11000/7332/20. Order was baseline 1-2,
+candidate 1-2, baseline 3, candidate 3. Each restart ran the same corpus before
+timing. No builds or regression tests overlapped these timed measurements.
+Benchmark data, SQL and scoring were unchanged.
+
+Raw logs: [before 1](fts-tuning-results/fts-stopword-before1.txt),
+[before 2](fts-tuning-results/fts-stopword-before2.txt),
+[before 3](fts-tuning-results/fts-stopword-before3.txt),
+[after 1](fts-tuning-results/fts-stopword-after1.txt),
+[after 2](fts-tuning-results/fts-stopword-after2.txt),
+[after 3](fts-tuning-results/fts-stopword-after3.txt).

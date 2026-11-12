@@ -1,0 +1,56 @@
+name: mvdb-ci
+on: [push, workflow_dispatch]
+
+jobs:
+  native:
+    name: Build & public cases (ubuntu, g++13)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build with make
+        run: |
+          g++ --version
+          cd minivectordb
+          make CXXFLAGS="-std=c++17 -O3 -Wall -Wextra -Isrc" 2>&1 | tee build.log
+      - name: Upload build log
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: build-log
+          path: minivectordb/build.log
+      - name: Run 20 official public cases
+        run: |
+          cd minivectordb/official_cases
+          python3 run_local.py 2>&1 | tee cases.log
+      - name: Upload case log
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: cases-log
+          path: minivectordb/official_cases/cases.log
+
+  docker:
+    name: docker build + read-only smoke (mirror platform)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Docker build (same as platform)
+        run: docker build -t mvdb:ci . 2>&1 | tee dockerbuild.log
+      - name: Smoke test in read-only container
+        run: |
+          set -e
+          printf 'CREATE TABLE t1 (id BIGINT, name VARCHAR(20), PRIMARY KEY(id));\nINSERT INTO t1 VALUES (1, '"'"'abc'"'"');\nSELECT * FROM t1;\nSHUTDOWN;\n' > smoke.sql
+          cat smoke.sql
+          timeout 60 docker run --rm --read-only --memory 2g --memory-swap 2g --pids-limit 128 --tmpfs /data:rw,size=64m -i mvdb:ci < smoke.sql > smoke.out 2> smoke.err || echo "container exit code: $?"
+          echo "--- stdout ---"; cat smoke.out
+          echo "--- stderr ---"; cat smoke.err
+          head -1 smoke.out | grep -q '"type":"ready"' && echo "SMOKE OK: ready received" || { echo "SMOKE FAIL"; exit 1; }
+      - name: Upload smoke logs
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: smoke-logs
+          path: |
+            dockerbuild.log
+            smoke.out
+            smoke.err

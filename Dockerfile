@@ -1,5 +1,5 @@
-FROM ubuntu:24.04
-RUN apt-get update && apt-get install -y --no-install-recommends g++ make && rm -rf /var/lib/apt/lists/*
+FROM gcc:13-bookworm
+# 基础镜像自带 g++ 13 与 make，构建阶段无需任何网络请求（不执行 apt-get）
 WORKDIR /app
 
 # 源码位于仓库 minivectordb/ 子目录

@@ -22,12 +22,18 @@ jobs:
         run: |
           cd minivectordb/official_cases
           python3 run_local.py 2>&1 | tee cases.log
+      - name: Memory-bounded stress (server under 2GB virtual memory limit)
+        run: |
+          cd minivectordb/official_cases
+          ( ulimit -v 2097152; python3 mem_stress.py ) 2>&1 | tee memstress.log
       - name: Upload case log
         uses: actions/upload-artifact@v4
         if: always()
         with:
           name: cases-log
-          path: minivectordb/official_cases/cases.log
+          path: |
+            minivectordb/official_cases/cases.log
+            minivectordb/official_cases/memstress.log
 
   docker:
     name: docker build + read-only smoke (mirror platform)

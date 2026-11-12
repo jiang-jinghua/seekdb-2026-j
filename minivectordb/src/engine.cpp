@@ -1039,31 +1039,23 @@ Result Engine::execute(const Stmt& st) {
                 return x.d < y.d;
             };
 
-            // gather + filter (rows are read from disk on demand; only matches are kept)
-            struct Cand { int64_t pk; std::shared_ptr<Row> row; std::vector<Key> keys; };
-            std::vector<Cand> cands;
-            for_each_visible(t, [&](int64_t pk, const Row& row, const Entry*) {
-                if (!eval_where(st.where.get(), row, sch)) return;
-                Cand c;
-                c.pk = pk;
-                c.row = std::make_shared<Row>(row);
-                c.keys.reserve(ord.size());
+            // gather + filter — memory-bounded: keep only (order keys, pk) refs, never
+            // full row copies; rows are re-fetched on demand for the output slice.
+            struct Ref { int64_t pk; std::vector<Key> keys; };
+            auto compute_keys = [&](const Row& row, Ref& r) {
+                r.keys.reserve(ord.size());
                 for (const auto& o : ord) {
-                    const Value& v = (*c.row)[o.idx];
+                    const Value& v = row[o.idx];
                     if (o.is_l2) {
                         Key k; k.kind = 0;
                         k.d = v.null ? 1e30 : (double)l2_distance(v.v.data(), o.vec->data(), v.v.size());
-                        c.keys.push_back(k);
+                        r.keys.push_back(k);
                     } else {
-                        c.keys.push_back(key_from_value(v));
+                        r.keys.push_back(key_from_value(v));
                     }
                 }
-                cands.push_back(std::move(c));
-            });
-
-            // top-K fast path: single L2 ascending order with LIMIT
-            bool topk_path = ord.size() == 1 && ord[0].is_l2 && !ord[0].desc && st.limit >= 0;
-            auto cand_less = [&](const Cand& a, const Cand& b) {
+            };
+            auto cand_less = [&](const Ref& a, const Ref& b) {
                 for (size_t i = 0; i < ord.size(); ++i) {
                     const Key& x = a.keys[i];
                     const Key& y = b.keys[i];
@@ -1072,43 +1064,83 @@ Result Engine::execute(const Stmt& st) {
                 }
                 return a.pk < b.pk;
             };
-            if (topk_path) {
-                size_t k = std::min((size_t)st.limit, cands.size());
-                std::partial_sort(cands.begin(), cands.begin() + k, cands.end(), cand_less);
-                cands.resize(k);
-            } else if (!ord.empty()) {
-                std::sort(cands.begin(), cands.end(), cand_less);
+
+            bool topk_path = ord.size() == 1 && ord[0].is_l2 && !ord[0].desc && st.limit >= 0;
+            std::vector<Ref> refs;
+            if (topk_path && st.limit > 0) {
+                // bounded heap: keep only the best `limit` refs (max-heap, top = worst kept)
+                size_t k = (size_t)st.limit;
+                for_each_visible(t, [&](int64_t pk, const Row& row, const Entry*) {
+                    if (!eval_where(st.where.get(), row, sch)) return;
+                    Ref r; r.pk = pk;
+                    compute_keys(row, r);
+                    if (refs.size() < k) {
+                        refs.push_back(std::move(r));
+                        std::push_heap(refs.begin(), refs.end(), cand_less);
+                    } else if (cand_less(r, refs.front())) {
+                        std::pop_heap(refs.begin(), refs.end(), cand_less);
+                        refs.back() = std::move(r);
+                        std::push_heap(refs.begin(), refs.end(), cand_less);
+                    }
+                });
+                std::sort(refs.begin(), refs.end(), cand_less);
             } else {
-                std::sort(cands.begin(), cands.end(),
-                          [](const Cand& a, const Cand& b) { return a.pk < b.pk; });
+                for_each_visible(t, [&](int64_t pk, const Row& row, const Entry*) {
+                    if (!eval_where(st.where.get(), row, sch)) return;
+                    Ref r; r.pk = pk;
+                    if (!ord.empty()) compute_keys(row, r);
+                    refs.push_back(std::move(r));
+                });
+                if (!ord.empty()) std::sort(refs.begin(), refs.end(), cand_less);
+                else std::sort(refs.begin(), refs.end(),
+                               [](const Ref& a, const Ref& b) { return a.pk < b.pk; });
             }
 
             Result res;
             res.is_select = true;
             res.header.reserve(proj.size());
             for (const auto& p : proj) res.header.push_back(p.name);
-            size_t nout = (st.limit >= 0) ? std::min((size_t)st.limit, cands.size()) : cands.size();
+            size_t nout = (st.limit >= 0) ? std::min((size_t)st.limit, refs.size()) : refs.size();
             res.rows.reserve(nout);
+            const std::string tkey = lower_name(t.schema.name);
             for (size_t i = 0; i < nout; ++i) {
-                const Cand& c = cands[i];
+                const Ref& ref = refs[i];
+                // re-fetch the row on demand (txn-staged via overlay, committed via disk)
+                const Row* crow = nullptr;
+                std::shared_ptr<Row> keep;
+                if (in_txn_) {
+                    auto oit = staged_.find(tkey);
+                    if (oit != staged_.end()) {
+                        auto vit = oit->second.find(ref.pk);
+                        if (vit != oit->second.end()) {
+                            if (vit->second) crow = &*vit->second;
+                            else throw SqlError(errcode::INVALID_VALUE, "row deleted during select");
+                        }
+                    }
+                }
+                if (!crow) {
+                    keep = read_row(t, ref.pk);
+                    if (!keep) throw SqlError(errcode::INVALID_VALUE, "row vanished during select");
+                    crow = keep.get();
+                }
                 Row r;
                 r.reserve(proj.size());
                 for (size_t j = 0; j < proj.size(); ++j) {
                     const Proj& p = proj[j];
                     if (p.is_l2) {
-                        const Value& v = (*c.row)[p.idx];
+                        const Value& v = (*crow)[p.idx];
                         Value out;
                         out.type = ColType::DOUBLE;
                         if (v.null) { out.null = true; }
                         else {
                             bool reuse_key = !ord.empty() && ord[0].is_l2 && ord[0].idx == p.idx &&
-                                             c.keys.size() == 1;
-                            out.d = reuse_key ? c.keys[0].d
+                                             ref.keys.size() == 1;
+                            out.d = reuse_key ? ref.keys[0].d
                                               : (double)l2_distance(v.v.data(), p.vec->data(), v.v.size());
                         }
                         r.push_back(std::move(out));
                     } else {
-                        r.push_back((*c.row)[p.idx]);
+                        r.push_back((*crow)[p.idx]);
                     }
                 }
                 res.rows.push_back(std::move(r));

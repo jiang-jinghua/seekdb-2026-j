@@ -20,6 +20,8 @@
 #ifdef _WIN32
 #include <fcntl.h>
 #include <io.h>
+#else
+#include <unistd.h> // _exit
 #endif
 
 namespace {

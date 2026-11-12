@@ -481,9 +481,10 @@ public:
     int64_t cmp_start_;
     int64_t cmp_end_;
   private:
-    int64_t first_field_idx_;
-    bool first_ascending_;
-    ObSortCmpFunc first_cmp_func_;
+    static constexpr int64_t CACHED_KEY_COUNT = 4;
+    int64_t cached_field_idx_[CACHED_KEY_COUNT];
+    bool cached_ascending_[CACHED_KEY_COUNT];
+    ObSortCmpFunc cached_cmp_funs_[CACHED_KEY_COUNT];
     int64_t cnt_;
     DISALLOW_COPY_AND_ASSIGN(Compare);
   };

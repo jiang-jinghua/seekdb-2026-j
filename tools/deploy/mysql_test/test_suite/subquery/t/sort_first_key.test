@@ -11,4 +11,6 @@ SELECT id,ROW_NUMBER() OVER (PARTITION BY a ORDER BY b DESC,c,id) AS rn FROM sor
 SELECT id,SUM(c) OVER (PARTITION BY a,b ORDER BY id ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS running FROM sort_first_key ORDER BY id;
 SELECT a,HEX(b),COUNT(*) AS n FROM sort_first_key GROUP BY a,b ORDER BY a DESC,b;
 SELECT DISTINCT a,b FROM sort_first_key ORDER BY a,b;
+SELECT id FROM sort_first_key ORDER BY a,b,c,(id % 2),id;
+SELECT id FROM sort_first_key ORDER BY a DESC,b,c DESC,(id % 2),(id % 3),id;
 DROP TABLE sort_first_key;

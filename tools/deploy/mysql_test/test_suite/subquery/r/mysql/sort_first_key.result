@@ -73,4 +73,28 @@ NULL	z
 1	b
 2	NULL
 2	b
+SELECT id FROM sort_first_key ORDER BY a,b,c,(id % 2),id;
+id
+7
+1
+4
+3
+9
+2
+8
+5
+6
+10
+SELECT id FROM sort_first_key ORDER BY a DESC,b,c DESC,(id % 2),(id % 3),id;
+id
+8
+6
+10
+5
+9
+3
+4
+2
+7
+1
 DROP TABLE sort_first_key;

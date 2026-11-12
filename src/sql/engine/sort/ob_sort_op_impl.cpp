@@ -357,7 +357,7 @@ int ObSortOpImpl::ObAdaptiveQS::compare_vals(int64_t l, int64_t r,
 ObSortOpImpl::Compare::Compare()
   : ret_(OB_SUCCESS), sort_collations_(nullptr), sort_cmp_funs_(nullptr),
     exec_ctx_(nullptr), access_ctx_(nullptr), cmp_count_(0), cmp_start_(0), cmp_end_(0),
-    first_field_idx_(0), first_ascending_(true), first_cmp_func_()
+    cached_field_idx_{}, cached_ascending_{}, cached_cmp_funs_{}
 {
 }
 
@@ -381,10 +381,10 @@ int ObSortOpImpl::Compare::init(
     cmp_start_ = 0;
     cmp_end_ = sort_cmp_funs_->count();
     enable_encode_sortkey_ = enable_encode_sortkey;
-    if (cnt_ > 0) {
-      first_field_idx_ = sort_collations_->at(0).field_idx_;
-      first_ascending_ = sort_collations_->at(0).is_ascending_;
-      first_cmp_func_ = sort_cmp_funs_->at(0);
+    for (int64_t i = 0; i < cnt_ && i < CACHED_KEY_COUNT; ++i) {
+      cached_field_idx_[i] = sort_collations_->at(i).field_idx_;
+      cached_ascending_[i] = sort_collations_->at(i).is_ascending_;
+      cached_cmp_funs_[i] = sort_cmp_funs_->at(i);
     }
   }
   return ret;
@@ -424,15 +424,15 @@ bool ObSortOpImpl::Compare::operator()(
     const ObDatum *rcells = r->cells();
     int cmp = 0;
     for (int64_t i = cmp_start_; 0 == cmp && i < cmp_end_ && OB_SUCC(ret); i++) {
-      // The first key decides most comparisons; avoid two virtual array accesses.
-      const int64_t idx = i == 0 ? first_field_idx_ : sort_collations_->at(i).field_idx_;
-      const ObSortCmpFunc &cmp_func = i == 0 ? first_cmp_func_ : sort_cmp_funs_->at(i);
+      // Cache a bounded key prefix without allocating a descriptor vector.
+      const int64_t idx = i < CACHED_KEY_COUNT ? cached_field_idx_[i] : sort_collations_->at(i).field_idx_;
+      const ObSortCmpFunc &cmp_func = i < CACHED_KEY_COUNT ? cached_cmp_funs_[i] : sort_cmp_funs_->at(i);
       if (OB_FAIL(
               cmp_func.cmp_func_(lcells[idx], rcells[idx], cmp, access_ctx_))) {
       } else if (cmp < 0) {
-        less = i == 0 ? first_ascending_ : sort_collations_->at(i).is_ascending_;
+        less = i < CACHED_KEY_COUNT ? cached_ascending_[i] : sort_collations_->at(i).is_ascending_;
       } else if (cmp > 0) {
-        less = i == 0 ? !first_ascending_ : !sort_collations_->at(i).is_ascending_;
+        less = i < CACHED_KEY_COUNT ? !cached_ascending_[i] : !sort_collations_->at(i).is_ascending_;
       }
     }
   }

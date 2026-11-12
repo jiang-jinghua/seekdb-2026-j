@@ -866,3 +866,57 @@ Raw logs: [before 1](fts-tuning-results/fts-ddl-wakeup-before1.txt),
 [after 1](fts-tuning-results/fts-ddl-wakeup-after1.txt),
 [after 2](fts-tuning-results/fts-ddl-wakeup-after2.txt),
 [after 3](fts-tuning-results/fts-ddl-wakeup-after3.txt).
+
+## Cache a bounded prefix of sort-key descriptors (2026-11-12)
+
+The stored-row comparator now caches the first four field indices, directions
+and comparison functions in fixed member arrays instead of caching only key
+zero. This removes virtual array accesses for comparisons resolved by keys
+one through three, which remain frequent when leading keys tie. No descriptor
+vector is allocated. Larger keys fall back to the original arrays. Encoded
+keys and comparison ranges retain their existing behavior; init refreshes
+all cached keys, and reset reconstructs the comparator.
+
+An immediate-second-stage FTS scheduling experiment was also tested but
+showed virtually unchanged build times in two comparisons and was reverted.
+It is not part of this commit. Existing completion-callback wakeups remain.
+
+The aligned server source matched all 6824 local source-file hashes before
+this experiment (normalizing CRLF to LF). Baseline is f6a70ed02. Release build
+and all 26 selected mysqltest cases passed. sort_first_key adds five/six-key
+orders with ties to exercise the fallback beyond cache capacity; expected
+output was recorded with the baseline executable. The 374-query corpus was
+byte-identical with empty SQL error streams.
+
+Full unchanged benchmark, SKIP_LOAD=0:
+
+| Run | Build total (s) | Chinese query (ms) | LIMIT query (ms) | Process CPU (s) |
+| --- | ---: | ---: | ---: | ---: |
+| Baseline 1 | 4.934 | 0.6752 | 1.1225 | 12.98 |
+| Baseline 2 | 4.880 | 0.6823 | 1.1394 | 12.27 |
+| Baseline 3 | 13.100 | 0.6989 | 1.1414 | 12.36 |
+| Candidate 1 | 4.587 | 0.6655 | 1.1359 | 11.62 |
+| Candidate 2 | 9.400 | 0.7093 | 1.1481 | 11.63 |
+| Candidate 3 | 17.063 | 0.6870 | 1.1686 | 12.70 |
+
+Mean whole-process CPU changed from 12.5367 to 11.9833 s (about 4.4% lower),
+but the third candidate CPU observation was worse, and mean construction
+elapsed time was worse. Shared-host/background work is included in CPU values.
+These results do not demonstrate a stable end-to-end or official-score gain.
+All outliers are retained; no construction speedup is claimed.
+
+Order was baseline 1-2, candidate 1-2, baseline 3, candidate 3. Identical corpus
+warmup ran after each restart. Compilation/regressions did not overlap timed
+runs. Hits remained 8001/11000/7332/20. No benchmark input, SQL, count, timing
+or scoring file was changed.
+
+Raw logs: [before 1](fts-tuning-results/fts-four-keys-before1.txt),
+[before 2](fts-tuning-results/fts-four-keys-before2.txt),
+[before 3](fts-tuning-results/fts-four-keys-before3.txt),
+[after 1](fts-tuning-results/fts-four-keys-after1.txt),
+[after 2](fts-tuning-results/fts-four-keys-after2.txt),
+[after 3](fts-tuning-results/fts-four-keys-after3.txt).
+CPU observations: [before 1-2](fts-tuning-results/fts-four-keys-before-cpu.json),
+[before 3](fts-tuning-results/fts-four-keys-before-third-cpu.json),
+[after 1-2](fts-tuning-results/fts-four-keys-after-cpu.json),
+[after 3](fts-tuning-results/fts-four-keys-after-third-cpu.json).

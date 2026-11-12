@@ -302,7 +302,28 @@ ObArrayHashMap *ObFTDAT::get_map() { return reinterpret_cast<ObArrayHashMap *>(b
 int ObArrayHashMap::find(const ObFTSingleWord &word, ObFTWordCode &code) const
 {
   int ret = OB_ENTRY_NOT_EXIST;
-  uint64_t hash = word.get_word().hash();
+  struct CharacterHashCache {
+    char bytes[ObCharset::MAX_MB_LEN] = {};
+    uint8_t length = 0;
+    uint64_t value = 0;
+    bool valid = false;
+  };
+  // Hashes depend on character bytes, not on the dictionary or its lifetime.
+  static thread_local CharacterHashCache cache;
+  uint64_t hash = 0;
+  if (word.word_len <= ObCharset::MAX_MB_LEN && cache.valid
+      && cache.length == word.word_len
+      && 0 == MEMCMP(cache.bytes, word.word, word.word_len)) {
+    hash = cache.value;
+  } else {
+    hash = word.get_word().hash();
+    if (word.word_len <= ObCharset::MAX_MB_LEN) {
+      MEMCPY(cache.bytes, word.word, word.word_len);
+      cache.length = word.word_len;
+      cache.value = hash;
+      cache.valid = true;
+    }
+  }
   uint64_t index = hash % header_.capacity_;
   while (header_.data[index].used) {
     if (header_.data[index].word == word) {

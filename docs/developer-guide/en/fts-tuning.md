@@ -729,3 +729,43 @@ a consistent reference. All files under src match 389f24b51 exactly. The
 experiment reports remain for auditability. A fresh release build and all
 25 selected mysqltest cases passed after restoration. This restoration is
 not a new performance improvement and does not guarantee the historical score.
+
+## Reuse a repeated character hash during dictionary lookup (2026-11-12)
+
+ObArrayHashMap::find recomputes the same byte-string hash when multiple active
+IK hits advance through one character. A bounded single-entry thread-local
+cache now reuses that hash for identical character length and bytes. Every
+map lookup, collision probe and equality check still runs; no dictionary code,
+pointer or matching result is cached. Dictionary replacement does not invalidate
+a byte-only hash. Different threads own independent entries. Cache storage is
+constant size and contains no allocation. Characters outside the fixed buffer
+capacity use the original hash computation without caching.
+
+Release build and all 25 selected mysqltest cases passed. The 374-query UTF-8
+corpus was byte-identical to b1ed4834c (whose source matches 389f24b51), with
+empty SQL error streams. Existing coverage includes mixed Unicode, repeated
+words, dictionary transitions and indexed DML.
+
+Two full unchanged runs per version, baseline 1-2 then candidate 1-2,
+SKIP_LOAD=0, identical corpus warmup after each restart:
+
+| Run | Total build (s) | IK tokenize (ms) | BENG tokenize (ms) |
+| --- | ---: | ---: | ---: |
+| Baseline 1 | 4.912 | 0.0481 | 0.0395 |
+| Baseline 2 | 4.855 | 0.0527 | 0.0310 |
+| Candidate 1 | 4.856 | 0.0498 | 0.0377 |
+| Candidate 2 | 4.821 | 0.0503 | 0.0422 |
+
+Mean build changed from 4.8835 to 4.8385 seconds (about 0.9%); mean IK time
+changed from 0.0504 to 0.05005 ms. These differences do not establish a stable
+end-to-end speedup on this shared host. Mean BENG time was worse, although BENG
+does not use this lookup. This is an experimental candidate, with no official
+score improvement claimed. Whole-workload CPU was 12.78/12.20 seconds before
+and 12.52/12.31 after. All four hits remained 8001/11000/7332/20.
+Benchmark data, SQL and scoring were unchanged; builds and regressions did not
+overlap the timed runs.
+
+Raw logs: [before 1](fts-tuning-results/fts-char-hash-before1.txt),
+[before 2](fts-tuning-results/fts-char-hash-before2.txt),
+[after 1](fts-tuning-results/fts-char-hash-after1.txt),
+[after 2](fts-tuning-results/fts-char-hash-after2.txt).

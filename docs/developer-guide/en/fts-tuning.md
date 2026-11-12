@@ -642,3 +642,39 @@ Raw logs: [before 1](fts-tuning-results/fts-stopword-before1.txt),
 [after 1](fts-tuning-results/fts-stopword-after1.txt),
 [after 2](fts-tuning-results/fts-stopword-after2.txt),
 [after 3](fts-tuning-results/fts-stopword-after3.txt).
+
+## Remove an unused TOKENIZE arena (2026-11-12)
+
+ObExprTokenize::tokenize_fulltext constructed tmp_parse_alloc on every call
+but never referenced it. Removing the arena avoids its constructor/destructor
+without changing any parser, map or JSON allocation ownership. No execution
+path or input processing was skipped.
+
+Release build, all 25 selected mysqltest cases and the 374-query UTF-8 corpus
+comparison passed. Corpus outputs were byte-identical to 389f24b51 and both
+SQL error streams were empty. Existing tests cover both TOKENIZE output modes,
+empty input, parser variants and indexed DML.
+
+Two complete unchanged benchmark runs per version (baseline 1-2, candidate
+1-2), with the same corpus warmup per restart and SKIP_LOAD=0:
+
+| Run | Build total (s) | IK tokenize (ms) | BENG tokenize (ms) |
+| --- | ---: | ---: | ---: |
+| Baseline 1 | 4.664 | 0.0449 | 0.0265 |
+| Baseline 2 | 4.643 | 0.0471 | 0.0275 |
+| Candidate 1 | 4.599 | 0.0459 | 0.0274 |
+| Candidate 2 | 4.521 | 0.0455 | 0.0270 |
+
+No stable TOKENIZE speedup was established: the observed differences were
+small and slightly worse on average. Build timing is unrelated to this
+SQL-expression-only removal and no build speedup is attributed to it.
+Whole-benchmark process CPU was 12.00/11.92 seconds before, 11.97/11.79 after;
+these observations include background work. The change is retained as removal
+of demonstrably unused per-call work, with no official score increase claimed.
+All four hit counts remained 8001/11000/7332/20. Benchmark SQL, inputs and
+scoring were unchanged; no compiler or regression runs overlapped timing.
+
+Raw logs: [before 1](fts-tuning-results/fts-token-arena-before1.txt),
+[before 2](fts-tuning-results/fts-token-arena-before2.txt),
+[after 1](fts-tuning-results/fts-token-arena-after1.txt),
+[after 2](fts-tuning-results/fts-token-arena-after2.txt).

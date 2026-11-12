@@ -818,3 +818,51 @@ Raw logs: [before 1](fts-tuning-results/fts-first-key-before1.txt),
 [after 1](fts-tuning-results/fts-first-key-after1.txt),
 [after 2](fts-tuning-results/fts-first-key-after2.txt),
 [after 3](fts-tuning-results/fts-first-key-after3.txt).
+
+## Wake the DDL scheduler on accepted completion events (2026-11-12)
+
+Successful receipt of column-checksum, SSTable-complement and child-task
+completion callbacks now calls idler_.wakeup(), as successful task insertion
+already does. The wake happens after modify_task releases its queue lock.
+Rejected callbacks do not wake the scheduler. Reported job failure remains
+accepted state that must be processed, so a successful callback with a failed
+job result also wakes it.
+
+This changes notification only. Task ordering, need_schedule checks, timeout
+backoff, retry intervals and all checksum/transaction checks remain intact.
+No task schedule timestamp is mutated from the callback, and no state machine
+stage is bypassed. This cannot eliminate delays in checks or actual build work.
+
+Release build and all 26 selected mysqltest cases passed. The 374-query UTF-8
+corpus remained byte-identical to 1cd29447e, with empty SQL error streams.
+The existing suite covers auxiliary-index creation, indexed DML and offline DDL.
+
+Complete unchanged benchmarks against 1cd29447e:
+
+| Run | IK all (s) | IK content (s) | Total build (s) |
+| --- | ---: | ---: | ---: |
+| Baseline 1 | 17.797 | 4.410 | 25.153 |
+| Baseline 2 | 7.008 | 5.389 | 15.479 |
+| Baseline 3 | 4.048 | 3.379 | 9.164 |
+| Candidate 1 | 2.151 | 1.728 | 4.813 |
+| Candidate 2 | 10.150 | 5.287 | 19.226 |
+| Candidate 3 | 14.068 | 3.877 | 21.140 |
+
+Both versions exhibited construction outliers. Mean construction was lower
+for the candidate, but its median was worse. This does not demonstrate stable
+speedup or resolution of the long-tail issue. No official score improvement is
+claimed. Whole-workload process CPU for baseline runs 1-2 was 13.25/12.23 s
+(wall 36.817/20.278 s), candidate 12.22/19.61 s (wall 9.314/27.236 s).
+These include background work and shared-host effects.
+
+All six runs are retained. Order: baseline 1-2, candidate 1-2, baseline 3,
+candidate 3. Each server ran the same corpus before timing. No compiler or
+regression tests overlapped timings. SKIP_LOAD=0 and all benchmark data,
+SQL and scoring were unchanged. Hits remained 8001/11000/7332/20.
+
+Raw logs: [before 1](fts-tuning-results/fts-ddl-wakeup-before1.txt),
+[before 2](fts-tuning-results/fts-ddl-wakeup-before2.txt),
+[before 3](fts-tuning-results/fts-ddl-wakeup-before3.txt),
+[after 1](fts-tuning-results/fts-ddl-wakeup-after1.txt),
+[after 2](fts-tuning-results/fts-ddl-wakeup-after2.txt),
+[after 3](fts-tuning-results/fts-ddl-wakeup-after3.txt).

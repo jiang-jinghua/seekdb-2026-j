@@ -3081,6 +3081,10 @@ int ObDDLScheduler::on_column_checksum_calc_reply(
   if (OB_ENTRY_NOT_EXIST == ret) {
     ret = OB_NEED_RETRY;
   }
+  if (OB_SUCC(ret)) {
+    // A completion event may unblock queued work; retain all scheduling/backoff checks.
+    idler_.wakeup();
+  }
   LOG_INFO("receive column checksum response", K(ret), "ddl_event_info", ObDDLEventInfo(GCTX.self_addr()), K(tablet_id), K(task_key), K(ret_code));
   return ret;
 }
@@ -3148,6 +3152,10 @@ int ObDDLScheduler::on_sstable_complement_job_reply(
   if (OB_ENTRY_NOT_EXIST == ret) {
     ret = OB_NEED_RETRY;
   }
+  if (OB_SUCC(ret)) {
+    // A completion event may unblock queued work; retain all scheduling/backoff checks.
+    idler_.wakeup();
+  }
   LOG_INFO("ddl sstable complement job reply", K(ret), "ddl_event_info", ObDDLEventInfo(GCTX.self_addr()), K(tablet_id), K(task_key), K(ret_code));
   return ret;
 }
@@ -3170,6 +3178,10 @@ int ObDDLScheduler::on_ddl_task_finish(
         task.add_event_info("ddl task finish");
         }))) {
     }
+  }
+  if (OB_SUCC(ret)) {
+    // A completion event may unblock queued work; retain all scheduling/backoff checks.
+    idler_.wakeup();
   }
   LOG_INFO("ddl task on finish", K(ret), K(ret_code), "ddl_event_info", ObDDLEventInfo(GCTX.self_addr()), K(parent_task_id), K(child_task_key), K(parent_task_trace_id));
   return ret;

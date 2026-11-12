@@ -769,3 +769,52 @@ Raw logs: [before 1](fts-tuning-results/fts-char-hash-before1.txt),
 [before 2](fts-tuning-results/fts-char-hash-before2.txt),
 [after 1](fts-tuning-results/fts-char-hash-after1.txt),
 [after 2](fts-tuning-results/fts-char-hash-after2.txt).
+
+## Cache the first sort-key descriptor without allocation (2026-11-12)
+
+The stored-row sort comparator now copies the first key's field index,
+direction and comparison function during init. Key zero no longer performs
+two virtual ObIArray::at accesses on each comparison. Other keys, encoded
+sort keys, nonzero comparison ranges, error handling and status polling retain
+the original paths. No descriptor vector is allocated. reset reconstructs the
+comparator, and init refreshes the cached key. Initialization also corrects a
+self-comparison typo so collation/function array counts must match.
+
+A fresh whole-benchmark CPU profile again showed Compare and ObIArrayWrap::at
+among hot symbols. Symbolization emitted DWARF warnings, so sampling is only
+qualitative motivation, not precise line-level attribution.
+
+Release build and all 26 selected mysqltest cases passed. The new
+subquery.sort_first_key expected output was recorded with 20bdad23d and covers
+multikey ties, directions, NULLs, LIMIT, window partitions and grouped/distinct
+results. The 374-query UTF-8 corpus remained byte-identical with zero SQL errors.
+
+Full unchanged comparisons against 20bdad23d, SKIP_LOAD=0:
+
+| Run | Build total (s) | Chinese query (ms) | LIMIT query (ms) |
+| --- | ---: | ---: | ---: |
+| Baseline 1 | 4.634 | 0.7166 | 1.1401 |
+| Baseline 2 | 4.381 | 0.6910 | 1.1681 |
+| Baseline 3 | 4.514 | 0.6926 | 1.1469 |
+| Candidate 1 | 4.519 | 0.6810 | 1.1435 |
+| Candidate 2 | 4.392 | 0.6814 | 1.1427 |
+| Candidate 3 | 15.221 | 0.6783 | 1.1827 |
+
+All runs are retained, including the candidate's construction outlier. Across
+three runs mean construction is worse; no construction improvement is claimed.
+Chinese queries were slightly faster in all three observations but the shared
+host and small sample prevent an official score prediction. First two full
+workload CPU deltas were 11.94/11.51 seconds before and 11.69/11.37 after;
+these include background work and do not isolate the comparator.
+
+Order was baseline 1-2, candidate 1-2, baseline 3, candidate 3. Each restart
+ran the same corpus before timing. Compilation and regressions did not overlap
+timed runs. All four hit counts remained 8001/11000/7332/20. Benchmark data,
+SQL, parameters and scoring were unchanged.
+
+Raw logs: [before 1](fts-tuning-results/fts-first-key-before1.txt),
+[before 2](fts-tuning-results/fts-first-key-before2.txt),
+[before 3](fts-tuning-results/fts-first-key-before3.txt),
+[after 1](fts-tuning-results/fts-first-key-after1.txt),
+[after 2](fts-tuning-results/fts-first-key-after2.txt),
+[after 3](fts-tuning-results/fts-first-key-after3.txt).

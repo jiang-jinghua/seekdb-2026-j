@@ -1,0 +1,14 @@
+SET NAMES utf8mb4;
+--disable_warnings
+DROP TABLE IF EXISTS sort_first_key;
+--enable_warnings
+CREATE TABLE sort_first_key(id INT PRIMARY KEY, a INT, b VARCHAR(40) COLLATE utf8mb4_bin, c INT);
+INSERT INTO sort_first_key VALUES (1,NULL,'z',2),(2,1,'b',1),(3,1,'a',3),(4,1,'a',NULL),(5,2,'b',1),(6,2,'b',2),(7,NULL,'a',1),(8,2,NULL,4),(9,1,'a ',5),(10,2,'b',2);
+SELECT id,a,HEX(b),c FROM sort_first_key ORDER BY a,b DESC,c,id;
+SELECT id FROM sort_first_key ORDER BY b,a DESC,c DESC,id LIMIT 5;
+SELECT id FROM sort_first_key ORDER BY c DESC,b,id;
+SELECT id,ROW_NUMBER() OVER (PARTITION BY a ORDER BY b DESC,c,id) AS rn FROM sort_first_key ORDER BY id;
+SELECT id,SUM(c) OVER (PARTITION BY a,b ORDER BY id ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS running FROM sort_first_key ORDER BY id;
+SELECT a,HEX(b),COUNT(*) AS n FROM sort_first_key GROUP BY a,b ORDER BY a DESC,b;
+SELECT DISTINCT a,b FROM sort_first_key ORDER BY a,b;
+DROP TABLE sort_first_key;

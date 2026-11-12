@@ -1,0 +1,76 @@
+SET NAMES utf8mb4;
+DROP TABLE IF EXISTS sort_first_key;
+CREATE TABLE sort_first_key(id INT PRIMARY KEY, a INT, b VARCHAR(40) COLLATE utf8mb4_bin, c INT);
+INSERT INTO sort_first_key VALUES (1,NULL,'z',2),(2,1,'b',1),(3,1,'a',3),(4,1,'a',NULL),(5,2,'b',1),(6,2,'b',2),(7,NULL,'a',1),(8,2,NULL,4),(9,1,'a ',5),(10,2,'b',2);
+SELECT id,a,HEX(b),c FROM sort_first_key ORDER BY a,b DESC,c,id;
+id	a	HEX(b)	c
+1	NULL	7A	2
+7	NULL	61	1
+2	1	62	1
+4	1	61	NULL
+3	1	61	3
+9	1	6120	5
+5	2	62	1
+6	2	62	2
+10	2	62	2
+8	2	NULL	4
+SELECT id FROM sort_first_key ORDER BY b,a DESC,c DESC,id LIMIT 5;
+id
+8
+9
+3
+4
+7
+SELECT id FROM sort_first_key ORDER BY c DESC,b,id;
+id
+9
+8
+3
+6
+10
+1
+7
+2
+5
+4
+SELECT id,ROW_NUMBER() OVER (PARTITION BY a ORDER BY b DESC,c,id) AS rn FROM sort_first_key ORDER BY id;
+id	rn
+1	1
+2	1
+3	3
+4	2
+5	1
+6	2
+7	2
+8	4
+9	4
+10	3
+SELECT id,SUM(c) OVER (PARTITION BY a,b ORDER BY id ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS running FROM sort_first_key ORDER BY id;
+id	running
+1	2
+2	1
+3	3
+4	3
+5	1
+6	3
+7	1
+8	4
+9	8
+10	5
+SELECT a,HEX(b),COUNT(*) AS n FROM sort_first_key GROUP BY a,b ORDER BY a DESC,b;
+a	HEX(b)	n
+2	NULL	1
+2	62	3
+1	61	3
+1	62	1
+NULL	61	1
+NULL	7A	1
+SELECT DISTINCT a,b FROM sort_first_key ORDER BY a,b;
+a	b
+NULL	a
+NULL	z
+1	a
+1	b
+2	NULL
+2	b
+DROP TABLE sort_first_key;

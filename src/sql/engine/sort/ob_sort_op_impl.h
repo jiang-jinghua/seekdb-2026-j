@@ -481,6 +481,9 @@ public:
     int64_t cmp_start_;
     int64_t cmp_end_;
   private:
+    int64_t first_field_idx_;
+    bool first_ascending_;
+    ObSortCmpFunc first_cmp_func_;
     int64_t cnt_;
     DISALLOW_COPY_AND_ASSIGN(Compare);
   };

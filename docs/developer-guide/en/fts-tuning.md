@@ -714,3 +714,18 @@ Raw logs: [before 1](fts-tuning-results/fts-direct-lower-before1.txt),
 [before 2](fts-tuning-results/fts-direct-lower-before2.txt),
 [after 1](fts-tuning-results/fts-direct-lower-after1.txt),
 [after 2](fts-tuning-results/fts-direct-lower-after2.txt).
+
+## Restore the established comparison baseline (2026-11-12)
+
+The unused TOKENIZE arena removal (40cad8727) and direct BENG lowercase output
+experiment (0af2b3f6b) did not demonstrate stable end-to-end gains locally.
+Reported official scores were 0 and 12.245 respectively, versus 22.252 for
+389f24b51. These single-run scores cannot establish causality: individual
+index-build durations varied substantially. No regression is attributed to
+either change solely on that evidence.
+
+Both experimental source changes are reverted so subsequent experiments have
+a consistent reference. All files under src match 389f24b51 exactly. The
+experiment reports remain for auditability. A fresh release build and all
+25 selected mysqltest cases passed after restoration. This restoration is
+not a new performance improvement and does not guarantee the historical score.

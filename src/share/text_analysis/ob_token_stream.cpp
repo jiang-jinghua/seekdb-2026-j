@@ -301,20 +301,8 @@ int ObBasicEnglishNormalizer::get_next(ObDatum &next_token, int64_t &token_freq)
     } else {
       ObString norm_alnum_token(norm_token_len, norm_token_ptr);
       ObString norm_lower_token;
-      if (OB_NOT_NULL(cs_) && cs_->casedn_multiply == 1
-          && ObCharset::charset_type_by_coll(static_cast<ObCollationType>(cs_->number)) == CHARSET_UTF8MB4) {
-        char *buf = static_cast<char *>(norm_allocator_.alloc(norm_token_len));
-        if (OB_ISNULL(buf)) {
-          ret = OB_ALLOCATE_MEMORY_FAILED;
-        } else {
-          // UTF-8 casedn supports separate buffers; write once instead of copying first.
-          const size_t len = cs_->cset->casedn(cs_, const_cast<char *>(norm_token_ptr),
-                                            norm_token_len, buf, norm_token_len);
-          norm_lower_token.assign_ptr(buf, static_cast<int32_t>(len));
-        }
-      } else if (OB_FAIL(ObCharset::tolower(cs_, norm_alnum_token, norm_lower_token, norm_allocator_))) {
-      }
-      if (OB_SUCC(ret)) {
+      if (OB_FAIL(ObCharset::tolower(cs_, norm_alnum_token, norm_lower_token, norm_allocator_))) {
+      } else {
         next_token.set_string(norm_lower_token);
       }
     }

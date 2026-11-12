@@ -275,12 +275,16 @@ int ObBasicEnglishNormalizer::get_next(ObDatum &next_token, int64_t &token_freq)
           }
         }
 
-        for (int32_t i = raw_token_len - 1; 0 <= i && i < raw_token_len && i >= first_alnum_pos; --i) {
-          const char *character = token + i;
-          if (ob_isalnum(cs_, *character)) {
-            last_alnum_pos = i;
-            found_alnum = true;
-            break;
+        // No alnum was found in the forward scan, so scanning backwards cannot
+        // find one either. A one-byte token already has its final boundary.
+        if (found_alnum && raw_token_len > 1) {
+          for (int32_t i = raw_token_len - 1; 0 <= i && i < raw_token_len && i >= first_alnum_pos; --i) {
+            const char *character = token + i;
+            if (ob_isalnum(cs_, *character)) {
+              last_alnum_pos = i;
+              found_alnum = true;
+              break;
+            }
           }
         }
 

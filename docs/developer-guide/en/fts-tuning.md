@@ -961,3 +961,57 @@ Raw logs: [before 1](fts-tuning-results/fts-upper-bound-before1.txt),
 [before 2](fts-tuning-results/fts-upper-bound-before2.txt),
 [after 1](fts-tuning-results/fts-upper-bound-after1.txt),
 [after 2](fts-tuning-results/fts-upper-bound-after2.txt).
+
+## Skip redundant BENG reverse-boundary scans (2026-11-12)
+
+The English normalizer first scans forward for an alphanumeric byte. If none
+exists, a reverse scan cannot discover one; if the token has one byte and an
+alnum was found, its final boundary is already known. Those cases now skip
+the reverse loop. Longer accepted tokens retain the original reverse scan,
+case conversion, allocation and token ownership. Charset classification and
+minimum/maximum token filtering are unchanged.
+
+Release build and all 26 selected mysqltest cases passed. beng_case_conversion
+adds pure punctuation, single-byte words and long punctuation strings; expected
+output was recorded with 33fa92b7c. The 374-query corpus was byte-identical with
+empty SQL error streams.
+
+Full unchanged benchmarks against 33fa92b7c:
+
+| Run | English build (s) | Total build (s) | BENG tokenize (ms) |
+| --- | ---: | ---: | ---: |
+| Baseline 1 | 0.964 | 4.990 | 0.0579 |
+| Baseline 2 | 0.974 | 4.919 | 0.0404 |
+| Baseline 3 | 1.002 | 4.929 | 0.0386 |
+| Candidate 1 | 0.983 | 4.898 | 0.0441 |
+| Candidate 2 | 0.958 | 4.827 | 0.0324 |
+| Candidate 3 | 0.967 | 4.953 | 0.0352 |
+
+BENG timings were lower in each paired observation, but the shared host and
+variance prevent a reliable end-to-end gain estimate. Whole-workload CPU was
+12.75/12.46/12.55 seconds before, 12.69/12.28/12.84 after. No stable overall
+speedup or official score improvement is claimed.
+
+A separate SQL BENCHMARK diagnostic ran three times per version using the
+same session-variable input. Single-byte-input times in microseconds were
+7049/7027/3212 before and 6857/5190/6696 after: these do not establish stable
+improvement. Punctuation-only input is a control because the upstream tokenizer
+already filters common ASCII punctuation before normalization. Its timings
+were 25590/4635/3027 before and 7228/2077/4097 after; startup/cache variation
+makes those unsuitable as evidence for this normalizer change.
+
+Order was baseline 1-2, candidate 1-2, baseline 3, candidate 3. Each restart
+ran the same corpus warmup. No compilation/regressions overlapped timed runs.
+All hits stayed 8001/11000/7332/20. Official benchmark SQL, inputs, counts,
+timing and scoring were unchanged. The separate diagnostic did not replace
+or change the official workload.
+
+Raw logs: [before 1](fts-tuning-results/fts-trim-scan-before1.txt),
+[before 2](fts-tuning-results/fts-trim-scan-before2.txt),
+[before 3](fts-tuning-results/fts-trim-scan-before3.txt),
+[after 1](fts-tuning-results/fts-trim-scan-after1.txt),
+[after 2](fts-tuning-results/fts-trim-scan-after2.txt),
+[after 3](fts-tuning-results/fts-trim-scan-after3.txt).
+Diagnostic [SQL](fts-tuning-results/fts-trim-scan-micro.sql),
+[before](fts-tuning-results/fts-trim-scan-before-micro.txt),
+[after](fts-tuning-results/fts-trim-scan-after-micro.txt).

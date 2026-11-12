@@ -46,3 +46,12 @@ tokens
 SELECT TOKENIZE(_utf8mb4'E e é É C c ç Ç' COLLATE utf8mb4_general_ci, 'beng', '[{"output":"all"}]') AS tokens;
 tokens
 {"tokens": [], "doc_len": 0}
+SELECT TOKENIZE('!!! ??? ___ --- ... +++', 'beng', '[{"output":"all"}]') AS tokens;
+tokens
+{"tokens": [], "doc_len": 0}
+SELECT TOKENIZE('a 7 Z ! ? _ - alpha beta', 'beng', '[{"output":"all"}]') AS tokens;
+tokens
+{"tokens": [{"alpha": 1}, {"beta": 1}], "doc_len": 2}
+SELECT TOKENIZE(CONCAT(REPEAT('!@#$%^&*()_+-=[]{}',64),' __ab__ --alpha-- z 9'), 'beng', '[{"output":"all"}]') AS tokens;
+tokens
+{"tokens": [], "doc_len": 0}

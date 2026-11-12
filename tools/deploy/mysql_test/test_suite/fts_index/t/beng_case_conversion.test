@@ -21,3 +21,7 @@ DROP TABLE beng_case_conversion;
 
 SELECT TOKENIZE(_utf8mb4'É é e E Ç ç c C' COLLATE utf8mb4_general_ci, 'beng', '[{"output":"all"}]') AS tokens;
 SELECT TOKENIZE(_utf8mb4'E e é É C c ç Ç' COLLATE utf8mb4_general_ci, 'beng', '[{"output":"all"}]') AS tokens;
+
+SELECT TOKENIZE('!!! ??? ___ --- ... +++', 'beng', '[{"output":"all"}]') AS tokens;
+SELECT TOKENIZE('a 7 Z ! ? _ - alpha beta', 'beng', '[{"output":"all"}]') AS tokens;
+SELECT TOKENIZE(CONCAT(REPEAT('!@#$%^&*()_+-=[]{}',64),' __ab__ --alpha-- z 9'), 'beng', '[{"output":"all"}]') AS tokens;

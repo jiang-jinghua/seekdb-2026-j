@@ -920,3 +920,44 @@ CPU observations: [before 1-2](fts-tuning-results/fts-four-keys-before-cpu.json)
 [before 3](fts-tuning-results/fts-four-keys-before-third-cpu.json),
 [after 1-2](fts-tuning-results/fts-four-keys-after-cpu.json),
 [after 3](fts-tuning-results/fts-four-keys-after-third-cpu.json).
+
+## Avoid a redundant dictionary upper-bound comparison (2026-11-12)
+
+The ordered-range path uses lower_bound to select the first inclusive upper
+bound not less than the character. It previously compared the selected upper
+bound again in the final range loop. The ordered path now checks only the
+remaining lower bound, then returns the selected dictionary. Empty ranges,
+past-the-end characters and gaps still return OB_ENTRY_NOT_EXIST. The original
+linear path remains for unordered ranges. Inclusive shared endpoints retain
+the first-match rule. No dictionary format, range ordering or collation changed.
+
+Release build and all 26 selected mysqltest cases passed. The 374-query UTF-8
+corpus was byte-identical to 3487bd7e4 with zero SQL errors. A standalone
+source-extracted differential harness compared the actual old/new lookup
+function bodies over 5,120,000 randomized range/character combinations, using
+simple byte-string and vector adapters. Ordered/unordered ranges, empty sets,
+gaps, overlapping ranges and shared boundaries matched. ASan/UBSan reported
+no issues. This harness checks lookup control flow; it is not a replacement
+for the integrated dictionary/charset tests.
+
+Two full unchanged benchmark runs per version, baseline 1-2 then candidate
+1-2, SKIP_LOAD=0, same corpus warmup after each restart:
+
+| Run | Build total (s) | IK tokenize (ms) | Chinese query (ms) |
+| --- | ---: | ---: | ---: |
+| Baseline 1 | 5.023 | 0.0524 | 0.6965 |
+| Baseline 2 | 4.994 | 0.0534 | 0.6735 |
+| Candidate 1 | 5.062 | 0.0559 | 0.6838 |
+| Candidate 2 | 4.893 | 0.0501 | 0.6801 |
+
+No stable end-to-end speedup is established by these measurements. The
+structural saving is one byte-string upper-bound comparison per successful
+ordered-range lookup; no official score increase is claimed. Whole-workload
+CPU was 12.74/12.52 seconds before and 12.86/12.31 after, including background
+work. Hits remained 8001/11000/7332/20. No compiler/regression workload overlapped
+timing; benchmark SQL, inputs, counts and scoring were unchanged.
+
+Raw logs: [before 1](fts-tuning-results/fts-upper-bound-before1.txt),
+[before 2](fts-tuning-results/fts-upper-bound-before2.txt),
+[after 1](fts-tuning-results/fts-upper-bound-after1.txt),
+[after 2](fts-tuning-results/fts-upper-bound-after2.txt).

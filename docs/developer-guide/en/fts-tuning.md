@@ -678,3 +678,39 @@ Raw logs: [before 1](fts-tuning-results/fts-token-arena-before1.txt),
 [before 2](fts-tuning-results/fts-token-arena-before2.txt),
 [after 1](fts-tuning-results/fts-token-arena-after1.txt),
 [after 2](fts-tuning-results/fts-token-arena-after2.txt).
+
+## Write BENG UTF-8 lowercase output directly (2026-11-12)
+
+The English normalizer previously used ObCharset::tolower, which allocates,
+copies the source and lowercases in place for casedn_multiply=1. For UTF-8
+with that multiplier, it now allocates the same capacity and invokes the same
+casedn function with separate source and destination buffers. This eliminates
+the preliminary memcpy while retaining case tables, output length and token
+storage lifetime. Other encodings retain the original helper.
+
+Release build and all 25 selected mysqltest cases passed. The 374-query corpus
+was byte-identical to 40cad8727 with empty SQL error streams on both versions.
+Existing beng_case_conversion tests include uppercase, mixed Unicode,
+punctuation, repeated and long tokens plus indexed DML.
+
+Two full unchanged runs per version (SKIP_LOAD=0), baseline 1-2 then candidate
+1-2, same corpus warmup after each restart, no concurrent compilation/tests:
+
+| Run | Build total (s) | IK tokenize (ms) | BENG tokenize (ms) |
+| --- | ---: | ---: | ---: |
+| Baseline 1 | 4.959 | 0.0529 | 0.0337 |
+| Baseline 2 | 4.779 | 0.0505 | 0.0268 |
+| Candidate 1 | 4.965 | 0.0476 | 0.0319 |
+| Candidate 2 | 4.852 | 0.0486 | 0.0346 |
+
+These measurements do not establish an end-to-end speedup. Mean BENG time was
+worse, and IK differences cannot be attributed to an English-only change.
+Process CPU for the full workload was 12.75/12.25 seconds before and
+12.59/12.24 after. This remains an experimental candidate that removes a
+specific copy, not a demonstrated official-score improvement. All hit counts
+remained 8001/11000/7332/20. Inputs, benchmark SQL and scoring are unchanged.
+
+Raw logs: [before 1](fts-tuning-results/fts-direct-lower-before1.txt),
+[before 2](fts-tuning-results/fts-direct-lower-before2.txt),
+[after 1](fts-tuning-results/fts-direct-lower-after1.txt),
+[after 2](fts-tuning-results/fts-direct-lower-after2.txt).

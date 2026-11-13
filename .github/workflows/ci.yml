@@ -24,6 +24,7 @@ jobs:
           python3 run_local.py 2>&1 | tee cases.log
       - name: Memory-bounded stress (server under 2GB virtual memory limit)
         run: |
+          set -o pipefail
           cd minivectordb/official_cases
           ( ulimit -v 2097152; python3 mem_stress.py ) 2>&1 | tee memstress.log
       - name: Upload case log

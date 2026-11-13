@@ -12,15 +12,18 @@ if not os.path.exists(BIN):
     BIN = os.path.join(os.path.dirname(HERE), "minivectordb")
 
 class Sess:
-    def __init__(self, d, rlimit_mb=None):
+    def __init__(self, d, rlimit_mb=None, cache_mb=None):
         pre = None
         if rlimit_mb and IS_POSIX:
             def pre():
                 lim = rlimit_mb * 1024 * 1024
                 resource.setrlimit(resource.RLIMIT_AS, (lim, lim))
+        env = dict(os.environ)
+        if cache_mb:
+            env["MVDB_ROW_CACHE_MB"] = str(cache_mb)
         self.p = subprocess.Popen([BIN, "--data-dir", d], stdin=subprocess.PIPE,
                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                  text=True, preexec_fn=pre)
+                                  text=True, preexec_fn=pre, env=env)
         r = self.p.stdout.readline(); assert '"ready"' in r, r
     def q(self, sql, check=True):
         self.p.stdin.write(json.dumps({"id": 1, "op": "execute", "sql": sql}) + "\n")
@@ -110,7 +113,7 @@ def main():
             print("[8] skipped on Windows (no resource module); CI/ubuntu runs it")
             print(f"MEM-STRESS OK-WIN ({time.time()-t0:.0f}s total)")
             return
-        s = Sess(d, rlimit_mb=120)
+        s = Sess(d, rlimit_mb=120, cache_mb=24)  # cache 24MB so row cache fits the 120MB cap
         r = s.q("SELECT id, pad FROM big WHERE id = 399999")
         assert r["rows"][0][0] == 399999, r["rows"]
         r = s.q("SELECT id FROM big WHERE score > 99000 ORDER BY id DESC LIMIT 5")

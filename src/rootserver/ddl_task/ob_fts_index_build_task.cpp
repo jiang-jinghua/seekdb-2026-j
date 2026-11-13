@@ -342,7 +342,7 @@ int ObFtsIndexBuildTask::check_health()
   } else if (!ObDDLServiceLauncher::is_ddl_service_started()) {
     ret = OB_STATE_NOT_MATCH;
     need_retry_ = false;
-  } else if (OB_FAIL(refresh_status())) {
+  } else if (OB_FAIL(refresh_status(is_fts_task() /* use_read_only_probe */))) {
   } else if (OB_FAIL(refresh_schema_version())) {
   } else if (status == ObDDLTaskStatus::FAIL) {
     /*already failed, and have submitted drop index task, do nothing*/

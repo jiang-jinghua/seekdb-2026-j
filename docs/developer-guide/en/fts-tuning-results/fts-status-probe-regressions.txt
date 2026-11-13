@@ -1,0 +1,63 @@
++ /usr/bin/python3 /home/jjh/seekdb-ai-debug/.github/script/seekdb/sdb.py destroy --base-dir /home/jjh/fts-regression-instance
+destroyed
++ /usr/bin/python3 /home/jjh/seekdb-ai-debug/.github/script/seekdb/sdb.py start --binary /home/jjh/seekdb-ai-debug/build_release/src/observer/seekdb --base-dir /home/jjh/fts-regression-instance --port 12883
+started pid=2012745
++ /usr/bin/python3 /home/jjh/seekdb-ai-debug/.github/script/seekdb/sdb.py wait-ready --client /home/jjh/seekdb-ai-debug/deps/3rd/u01/obclient/bin/obclient --base-dir /home/jjh/fts-regression-instance --host 127.0.0.1 --port 12883 --user root --timeout 600
+ready
++ /home/jjh/seekdb-ai-debug/deps/3rd/u01/obclient/bin/obclient -h 127.0.0.1 -P 12883 -uroot -A -c -Doceanbase < /home/jjh/seekdb-ai-debug/tools/deploy/init.sql
++ /home/jjh/seekdb-ai-debug/deps/3rd/u01/obclient/bin/obclient -h 127.0.0.1 -P 12883 -uroot -A -c -Dtest < /home/jjh/seekdb-ai-debug/tools/deploy/init_user.sql
+[ RUN      ] fts_index.basic_dml
+[       OK ] fts_index.basic_dml (29.892s)
+[ RUN      ] fts_index.basic_dml_sequel
+[       OK ] fts_index.basic_dml_sequel (1.864s)
+[ RUN      ] fts_index.beng_case_conversion
+[       OK ] fts_index.beng_case_conversion (0.629s)
+[ RUN      ] fts_index.cn_word
+[       OK ] fts_index.cn_word (1.594s)
+[ RUN      ] fts_index.create_fts_index_afterward
+[       OK ] fts_index.create_fts_index_afterward (7.803s)
+[ RUN      ] fts_index.create_table_with_fts_index
+[       OK ] fts_index.create_table_with_fts_index (0.213s)
+[ RUN      ] fts_index.domain_id_merge_with_compare_null
+[       OK ] fts_index.domain_id_merge_with_compare_null (0.134s)
+[ RUN      ] fts_index.drop_index
+[       OK ] fts_index.drop_index (6.910s)
+[ RUN      ] fts_index.ik_hit_erase
+[       OK ] fts_index.ik_hit_erase (0.015s)
+[ RUN      ] fts_index.ik_hot_path
+[       OK ] fts_index.ik_hot_path (0.013s)
+[ RUN      ] fts_index.ik_range_lookup
+[       OK ] fts_index.ik_range_lookup (0.018s)
+[ RUN      ] fts_index.ik_utf8_scan
+[       OK ] fts_index.ik_utf8_scan (0.023s)
+[ RUN      ] fts_index.index_view
+[       OK ] fts_index.index_view (0.253s)
+[ RUN      ] fts_index.load_data
+[       OK ] fts_index.load_data (0.143s)
+[ RUN      ] fts_index.lowercase_fast_path
+[       OK ] fts_index.lowercase_fast_path (0.012s)
+[ RUN      ] fts_index.membership_score
+[       OK ] fts_index.membership_score (0.089s)
+[ RUN      ] fts_index.offline_ddl_with_fts_index
+[       OK ] fts_index.offline_ddl_with_fts_index (21.173s)
+[ RUN      ] fts_index.online_ddl_on_table_with_fts_index
+[       OK ] fts_index.online_ddl_on_table_with_fts_index (0.640s)
+[ RUN      ] fts_index.parser_properties
+[       OK ] fts_index.parser_properties (0.683s)
+[ RUN      ] fts_index.partitioned_simple_query
+[       OK ] fts_index.partitioned_simple_query (0.246s)
+[ RUN      ] fts_index.simple_query
+[       OK ] fts_index.simple_query (0.759s)
+[ RUN      ] fts_index.tokenize_function
+[       OK ] fts_index.tokenize_function (0.060s)
+[ RUN      ] subquery.binary_string_order
+[       OK ] subquery.binary_string_order (0.030s)
+[ RUN      ] subquery.order_by_subquery
+[       OK ] subquery.order_by_subquery (0.150s)
+[ RUN      ] subquery.sort_first_key
+[       OK ] subquery.sort_first_key (0.023s)
+[ RUN      ] subquery.sort_short_strings
+[       OK ] subquery.sort_short_strings (0.033s)
++ /usr/bin/python3 /home/jjh/seekdb-ai-debug/.github/script/seekdb/sdb.py destroy --base-dir /home/jjh/fts-regression-instance
+destroyed
+slice 0 finished: cases=26, failed=0, success=True

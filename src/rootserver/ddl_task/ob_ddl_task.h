@@ -400,6 +400,12 @@ public:
       common::ObMySQLProxy &proxy,
       const int64_t task_id);
 
+  // Nonlocking probe only; state changes must re-read under select_for_update.
+  static int read_task_status(
+      common::ObMySQLProxy &proxy,
+      const int64_t task_id,
+      int64_t &task_status);
+
   static int select_for_update(
       common::ObMySQLTransaction &trans,
       const int64_t task_id,
@@ -647,7 +653,7 @@ public:
   int set_ddl_stmt_str(const ObString &ddl_stmt_str);
   int convert_to_record(ObDDLTaskRecord &task_record, common::ObIAllocator &allocator);
   int switch_status(const share::ObDDLTaskStatus new_status, const bool enable_flt, const int ret_code);
-  int refresh_status();
+  int refresh_status(const bool use_read_only_probe = false);
   int refresh_schema_version();
   int remove_task_record();
   int report_error_code(const ObString &forward_user_message, const int64_t affected_rows = 0);

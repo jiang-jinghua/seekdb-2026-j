@@ -675,10 +675,29 @@ int ObDDLTask::switch_status(const ObDDLTaskStatus new_status, const bool enable
   return ret;
 }
 
-int ObDDLTask::refresh_status()
+int ObDDLTask::refresh_status(const bool use_read_only_probe)
 {
   int ret = OB_SUCCESS;
-  if (OB_FAIL(switch_status(task_status_, false, OB_SUCCESS))) {
+  bool is_cancel = false;
+  int64_t stored_status = 0;
+  if (!use_read_only_probe || task_status_ == FAIL || task_status_ == SUCCESS
+      || ret_code_ != OB_SUCCESS) {
+    ret = switch_status(task_status_, false, OB_SUCCESS);
+  } else if (OB_SUCCESS != check_ddl_task_is_cancel(trace_id_, is_cancel) || is_cancel) {
+    // Preserve cancellation/error handling in the original locking path.
+    ret = switch_status(task_status_, false, OB_SUCCESS);
+  } else if (OB_ISNULL(GCTX.sql_proxy_)) {
+    ret = OB_INVALID_ARGUMENT;
+  } else if (OB_FAIL(DDL_SIM(task_id_, CHECK_RUNTIME_STANDBY_FAILED))) {
+  } else if (OB_FAIL(ObDDLTaskRecordOperator::read_task_status(
+                 *GCTX.sql_proxy_, task_id_, stored_status))) {
+    if (OB_ENTRY_NOT_EXIST == ret) {
+      need_retry_ = false;
+    }
+  } else if (stored_status != task_status_) {
+    // The probe is not authoritative for transitions. Re-read the record
+    // under its row lock, including ret_code and snapshot_version.
+    ret = switch_status(task_status_, false, OB_SUCCESS);
   }
   return ret;
 }
@@ -3174,6 +3193,38 @@ int64_t ObDDLTaskRecordOperator::get_record_id(share::ObDDLType ddl_type, int64_
 {
   UNUSED(ddl_type);
   return origin_id;
+}
+
+int ObDDLTaskRecordOperator::read_task_status(
+    common::ObMySQLProxy &proxy,
+    const int64_t task_id,
+    int64_t &task_status)
+{
+  int ret = OB_SUCCESS;
+  ObSqlString sql_string;
+  task_status = 0;
+  if (OB_UNLIKELY(task_id <= 0)) {
+    ret = OB_NOT_INIT;
+  } else {
+    SMART_VAR(ObMySQLProxy::MySQLResult, res) {
+      sqlclient::ObMySQLResult *result = nullptr;
+      if (OB_FAIL(sql_string.assign_fmt("SELECT status FROM %s WHERE task_id = %lu",
+                                       OB_ALL_DDL_TASK_STATUS_TNAME, task_id))) {
+      } else if (OB_FAIL(DDL_SIM(task_id, TASK_STATUS_OPERATOR_SLOW))) {
+      } else if (OB_FAIL(DDL_SIM(task_id, SELECT_TASK_RECORD_FOR_UPDATE_FAILED))) {
+      } else if (OB_FAIL(proxy.read(res, sql_string.ptr()))) {
+      } else if (OB_ISNULL(result = res.get_result())) {
+        ret = OB_ERR_UNEXPECTED;
+      } else if (OB_FAIL(result->next())) {
+        if (OB_ITER_END == ret) {
+          ret = OB_ENTRY_NOT_EXIST;
+        }
+      } else {
+        EXTRACT_INT_FIELD_MYSQL(*result, "status", task_status, int64_t);
+      }
+    }
+  }
+  return ret;
 }
 
 int ObDDLTaskRecordOperator::select_for_update(

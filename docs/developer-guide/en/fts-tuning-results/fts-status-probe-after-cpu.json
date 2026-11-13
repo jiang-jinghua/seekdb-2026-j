@@ -1,0 +1,17 @@
+[
+  {
+    "run": 1,
+    "seekdb_cpu_seconds": 12.84,
+    "wall_seconds": 8.642
+  },
+  {
+    "run": 2,
+    "seekdb_cpu_seconds": 11.91,
+    "wall_seconds": 8.489
+  },
+  {
+    "run": 3,
+    "seekdb_cpu_seconds": 12.51,
+    "wall_seconds": 9.122
+  }
+]

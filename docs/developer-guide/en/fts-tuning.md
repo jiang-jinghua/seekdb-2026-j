@@ -1168,3 +1168,78 @@ Evidence: [phase records](fts-tuning-results/fts-phase-final-phases.txt),
 [rejected baseline 2](fts-tuning-results/fts-child-poll-before2.txt),
 [rejected candidate 1](fts-tuning-results/fts-child-poll-after1.txt),
 [rejected candidate 2](fts-tuning-results/fts-child-poll-after2.txt).
+
+## Read-only FTS status probes (2026-11-13)
+
+Baseline: f1470bdc52b361a21f7650fe0dcc1704a5a9096c. The preceding phase
+instrumentation showed repeated check_health() calls dominating process()
+time while waiting for child tasks. refresh_status() previously called
+switch_status() on every visit: even an unchanged successful state opened a
+transaction, SELECTed the task row FOR UPDATE, and ended the transaction.
+
+FTS build tasks now opt into a read-only status probe. Each visit still checks
+cancellation and reads current task status. For an unchanged nonterminal state
+with no recorded error or cancellation, no transaction/row lock is opened.
+Changed states are re-read through the original locking switch_status() path,
+which still refreshes ret_code/snapshot_version and applies task context,
+events and cancellation cleanup. Terminal/error states and cancellation (or
+failure of the cancellation check) also use that original path. A missing task
+record still clears need_retry_; read errors propagate. Existing DDL fault
+injection points remain in the probe. Other DDL callers, including non-FTS
+domain-index builds, retain locking refresh by default. No polling interval,
+DDL checks, task persistence or scoring parameters changed.
+
+The probe is deliberately not used to apply transitions or update task rows.
+If cancellation/state changes race the probe, subsequent transitions still
+revalidate under the row lock, and the next refresh checks cancellation again.
+This does not make the whole process() call atomic with external cancellation;
+the original transaction also ended before subsequent phase work.
+
+Validation: release build; all 26 selected mysqltest cases; 374 IK/BENG corpus
+queries byte-identical with empty SQL error streams; all benchmark hit counts
+8001/11000/7332/20. On a dedicated test instance a CREATE FULLTEXT INDEX was
+still running at 250 ms, KILL QUERY produced ERROR 1317, the cancelled index
+was removed, and a replacement index built successfully with the same MATCH
+count (4000) as the original table. A separate graceful restart at 250 ms during
+build recovered the index and the same count. Temporary tables were removed
+and the test server stopped. These checks do not exhaust all concurrent
+cancel/delete races, injected failures or power-loss scenarios.
+
+Three complete unchanged benchmark runs per binary, baseline then candidate:
+
+| Run | Total build (s) | Process CPU (s) |
+| --- | ---: | ---: |
+| Baseline 1 | 4.962 | 13.49 |
+| Baseline 2 | 5.036 | 12.67 |
+| Baseline 3 | 4.671 | 11.79 |
+| Candidate 1 | 4.765 | 12.84 |
+| Candidate 2 | 4.656 | 11.91 |
+| Candidate 3 | 4.911 | 12.51 |
+
+Mean total build was 4.890 versus 4.777 s (about 2.3% lower), and mean process
+CPU 12.65 versus 12.42 s. Across all nine WAIT_AUX_TABLE_COMPLEMENT phases,
+baseline health-check wall time totaled 1870932 us over 920 visits, versus
+135018 us over 1074 visits: about 2034 versus 126 us per visit (93.8% lower).
+More visits are possible because each check is shorter; scheduler timing is
+unchanged. Health timing includes SQL wait and is not CPU attribution. The
+large local check reduction therefore does not imply equally large index-build
+improvement or an official score gain. Shared-host sequential timing and only
+three runs limit conclusions; no completed run was excluded. Both binaries
+had the same phase instrumentation and corpus warmup; compilation/regressions
+and fault tests were outside timed runs. The reused benchmark instance here
+was the separately created phase-recovery instance, not the earlier preserved
+instance that stalled at DROP DATABASE.
+
+Raw evidence: [before 1](fts-tuning-results/fts-status-probe-before1.txt),
+[before 2](fts-tuning-results/fts-status-probe-before2.txt),
+[before 3](fts-tuning-results/fts-status-probe-before3.txt),
+[after 1](fts-tuning-results/fts-status-probe-after1.txt),
+[after 2](fts-tuning-results/fts-status-probe-after2.txt),
+[after 3](fts-tuning-results/fts-status-probe-after3.txt),
+[before phases](fts-tuning-results/fts-status-probe-before-phases.txt),
+[after phases](fts-tuning-results/fts-status-probe-after-phases.txt),
+[before CPU](fts-tuning-results/fts-status-probe-before-cpu.json),
+[after CPU](fts-tuning-results/fts-status-probe-after-cpu.json),
+[regressions](fts-tuning-results/fts-status-probe-regressions.txt),
+[cancellation](fts-tuning-results/fts-status-probe-cancel.txt),
+[restart recovery](fts-tuning-results/fts-status-probe-recovery.txt).

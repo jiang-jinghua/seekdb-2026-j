@@ -1,0 +1,4 @@
+interrupted DDL exit: 1
+interrupted DDL stderr: ERROR 1317 (70100) at line 1: Query execution was interrupted
+cancelled index removed
+replacement index result matches original: 4000

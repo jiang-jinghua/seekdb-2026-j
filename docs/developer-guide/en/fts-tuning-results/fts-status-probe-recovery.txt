@@ -1,0 +1,4 @@
+DDL client still running before restart: True
+interrupted client exit: 1
+recovered MATCH result: 4000
+recovered result matches original index

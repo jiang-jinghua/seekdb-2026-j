@@ -1067,3 +1067,41 @@ Raw logs: [before 1](fts-tuning-results/fts-deferred-copy-before1.txt),
 [after 1](fts-tuning-results/fts-deferred-copy-after1.txt),
 [after 2](fts-tuning-results/fts-deferred-copy-after2.txt),
 [after 3](fts-tuning-results/fts-deferred-copy-after3.txt).
+
+## Identical FTS word bytes (2026-11-13, experimental)
+
+Baseline: 15bc9187146766eea0b67100cd9abd07223724d3.
+For two non-NULL VARCHAR words with the same collation and identical bytes,
+ObFTWord equality now returns true without invoking the selected datum
+comparator. Function selection and the existing null-function guard remain.
+Nonidentical bytes, NULLs and other types retain the original comparator;
+case/accent/padding equivalence and latest-equivalent-key replacement are
+unchanged. This adds a byte comparison for equal-length unequal words, which
+can offset the saving; it is not a demonstrated overall performance win.
+
+Release build and all 26 selected mysqltest regressions passed, including the
+expanded beng_case_conversion case. The 374-query IK/BENG corpus was byte
+identical between binaries and both SQL error streams were empty.
+
+Two complete runs per binary, baseline then candidate, with identical corpus
+warmup on each startup and no concurrent build/regression job:
+
+| Run | Build total (s) | IK tokenize (ms) | BENG tokenize (ms) | Process CPU (s) |
+| --- | ---: | ---: | ---: | ---: |
+| Baseline 1 | 5.032 | 0.0702 | 0.0355 | 13.80 |
+| Baseline 2 | 5.083 | 0.0601 | 0.0478 | 13.17 |
+| Candidate 1 | 5.053 | 0.0660 | 0.0508 | 13.90 |
+| Candidate 2 | 5.070 | 0.0650 | 0.0582 | 13.00 |
+
+All four hit counts remained 8001/11000/7332/20. No runs were excluded.
+Build timing is essentially unchanged and tokenizer measurements do not show
+stable improvement (BENG was slower). These sequential shared-host runs do
+not establish causal query-speed gains either. The candidate is retained as
+an explicitly experimental, correctness-checked comparison shortcut; it must
+not be presented as a proven score improvement. Official inputs, workload,
+measurement scripts and score calculation were not modified.
+
+Raw logs: [baseline 1](fts-tuning-results/fts-word-equal-before1.txt),
+[baseline 2](fts-tuning-results/fts-word-equal-before2.txt),
+[candidate 1](fts-tuning-results/fts-word-equal-after1.txt),
+[candidate 2](fts-tuning-results/fts-word-equal-after2.txt).

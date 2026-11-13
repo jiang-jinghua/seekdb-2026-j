@@ -25,6 +25,7 @@ public:
     explicit Engine(const std::string& data_dir);
     ~Engine();
     Result execute(const Stmt& st);
+    Result execute_stmt(const Stmt& st);
     void shutdown(); // rollback uncommitted txn, flush + fsync everything
     void sync_all();
 

@@ -2,6 +2,9 @@
 # Memory-bounded SELECT stress: big table + big vector table under platform-like limits.
 # Verifies: big SELECT with ORDER BY/LIMIT, restart survival, vector topk, txn-staged select.
 import json, os, subprocess, sys, tempfile, shutil, random, time
+IS_POSIX = os.name == 'posix'
+if IS_POSIX:
+    import resource
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 BIN = os.path.join(os.path.dirname(HERE), "minivectordb.exe")
@@ -9,9 +12,15 @@ if not os.path.exists(BIN):
     BIN = os.path.join(os.path.dirname(HERE), "minivectordb")
 
 class Sess:
-    def __init__(self, d):
+    def __init__(self, d, rlimit_mb=None):
+        pre = None
+        if rlimit_mb and IS_POSIX:
+            def pre():
+                lim = rlimit_mb * 1024 * 1024
+                resource.setrlimit(resource.RLIMIT_AS, (lim, lim))
         self.p = subprocess.Popen([BIN, "--data-dir", d], stdin=subprocess.PIPE,
-                                  stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                  text=True, preexec_fn=pre)
         r = self.p.stdout.readline(); assert '"ready"' in r, r
     def q(self, sql, check=True):
         self.p.stdin.write(json.dumps({"id": 1, "op": "execute", "sql": sql}) + "\n")
@@ -31,7 +40,7 @@ def main():
     try:
         s = Sess(d)
         s.q("CREATE TABLE big (id BIGINT PRIMARY KEY, pad VARCHAR(400), score BIGINT)")
-        N = 150000
+        N = 400000
         for start in range(0, N, 500):
             vals = ",".join(
                 f"({i}, '{'x' * 380}{i % 97}', {i * 2654435761 % 100000})"
@@ -93,6 +102,20 @@ def main():
             ",".join(str(x) for x in qv)))
         assert len(r["rows"]) == 3
         print("[7] vector topk after restart OK")
+        s.close()
+
+        # [8] decisive: recovery over a ~160MB data file with the server capped at 120MB.
+        # Whole-file buffering in load_dir would abort here; streaming replay must pass.
+        if not IS_POSIX:
+            print("[8] skipped on Windows (no resource module); CI/ubuntu runs it")
+            print(f"MEM-STRESS OK-WIN ({time.time()-t0:.0f}s total)")
+            return
+        s = Sess(d, rlimit_mb=120)
+        r = s.q("SELECT id, pad FROM big WHERE id = 399999")
+        assert r["rows"][0][0] == 399999, r["rows"]
+        r = s.q("SELECT id FROM big WHERE score > 99000 ORDER BY id DESC LIMIT 5")
+        assert len(r["rows"]) == 5
+        print("[8] recovery of 160MB data file under 120MB server limit OK")
         s.close()
         print(f"MEM-STRESS ALL OK ({time.time()-t0:.0f}s total)")
     finally:

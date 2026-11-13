@@ -279,27 +279,54 @@ void Engine::load_dir() {
         std::string base = p.substr(0, p.size() - 5);
         t->meta_path = p;
         t->wal_path = base + ".wal";
-        // replay the data file: build pk -> (offset,len) index only; rows stay on disk
+        // replay the data file: build pk -> (offset,len) index only; rows stay on disk.
+        // Streaming: read in fixed chunks so recovery memory stays bounded even for
+        // data files far larger than the container memory limit (only the pending
+        // partial frame is carried over between chunks).
         int fd = open_read(t->wal_path);
         uint64_t off = 0;
         if (fd >= 0) {
-            std::string buf;
+            std::string pend; // bytes not yet consumed (partial frame carry-over)
+            pend.reserve((2u << 20));
             char tmp[1 << 20];
             ssize_t r;
-            while ((r = read(fd, tmp, sizeof(tmp))) > 0) buf.append(tmp, (size_t)r);
-            close_fd(fd);
-            size_t pos = 0;
-            while (pos + 8 <= buf.size()) {
-                size_t consumed = wal_replay_one(buf.data() + pos, buf.size() - pos, off, *t, true);
-                if (consumed == 0) {
-                    fprintf(stderr, "[minivectordb] data file %s: stop replay at offset %llu (partial/corrupt tail, truncating)\n",
-                            t->wal_path.c_str(), (unsigned long long)off);
-                    truncate_fd(t->wal_path, (long long)off);
-                    break;
+            bool stop = false;
+            while (!stop && (r = read(fd, tmp, sizeof(tmp))) > 0) {
+                pend.append(tmp, (size_t)r);
+                size_t pos = 0;
+                while (true) {
+                    // need at least a frame header, and the declared payload must be
+                    // fully buffered before we can judge the frame (streaming-safe)
+                    if (pend.size() - pos < 8) break;
+                    uint32_t flen = get_u32(pend.data() + pos);
+                    if (flen > (64u << 20)) { // absurd length: corrupt header, truncate
+                        fprintf(stderr, "[minivectordb] data file %s: corrupt frame length %u at offset %llu, truncating\n",
+                                t->wal_path.c_str(), flen, (unsigned long long)off);
+                        truncate_fd(t->wal_path, (long long)off);
+                        stop = true;
+                        break;
+                    }
+                    if (flen > (pend.size() - pos) - 8) break; // frame spans chunk boundary: read more
+                    size_t consumed = wal_replay_one(pend.data() + pos, pend.size() - pos, off, *t, true);
+                    if (consumed == 0) { // CRC mismatch: genuine corruption, truncate
+                        fprintf(stderr, "[minivectordb] data file %s: stop replay at offset %llu (corrupt tail, truncating)\n",
+                                t->wal_path.c_str(), (unsigned long long)off);
+                        truncate_fd(t->wal_path, (long long)off);
+                        stop = true;
+                        break;
+                    }
+                    pos += consumed;
+                    off += consumed;
                 }
-                pos += consumed;
-                off += consumed;
+                if (pos > 0) pend.erase(0, pos);
             }
+            if (!stop && !pend.empty()) {
+                // EOF with an incomplete frame: process was killed mid-append; drop the tail
+                fprintf(stderr, "[minivectordb] data file %s: partial frame at EOF, truncating to %llu\n",
+                        t->wal_path.c_str(), (unsigned long long)off);
+                truncate_fd(t->wal_path, (long long)off);
+            }
+            close_fd(fd);
         }
         t->file_off = off;
         t->wal_fd = open_append(t->wal_path);

@@ -69,7 +69,12 @@ ObFtsIndexBuildTask::ObFtsIndexBuildTask()
     is_retryable_ddl_(true),
     use_doc_id_(true),
     rowkey_doc_schema_version_(0),
-    charset_type_(CHARSET_INVALID)
+    charset_type_(CHARSET_INVALID),
+    phase_status_(-1),
+    phase_start_us_(0),
+    phase_active_us_(0),
+    phase_health_us_(0),
+    phase_calls_(0)
 {
 }
 
@@ -211,6 +216,14 @@ int ObFtsIndexBuildTask::init(const ObDDLTaskRecord &task_record)
 
 int ObFtsIndexBuildTask::process()
 {
+  const int64_t call_start_us = ObTimeUtility::current_time();
+  if (is_inited_ && phase_status_ != task_status_) {
+    phase_status_ = task_status_;
+    phase_start_us_ = call_start_us;
+    phase_active_us_ = 0;
+    phase_health_us_ = 0;
+    phase_calls_ = 0;
+  }
   int ret = OB_SUCCESS;
   ObIndexType index_type = create_index_arg_.index_type_;
   if (OB_UNLIKELY(!is_inited_)) {
@@ -274,6 +287,22 @@ int ObFtsIndexBuildTask::process()
     }
     } // end switch
   }
+  if (is_inited_ && phase_start_us_ > 0) {
+    const int64_t call_end_us = ObTimeUtility::current_time();
+    phase_active_us_ += MAX(0, call_end_us - call_start_us);
+    ++phase_calls_;
+    if (phase_status_ != task_status_ || !need_retry()) {
+      const int64_t elapsed_us = MAX(0, call_end_us - phase_start_us_);
+      LOG_INFO("fts build phase timing", K_(task_id), K_(index_table_id),
+               K_(phase_status), K_(task_status), K(elapsed_us), K_(phase_active_us),
+               K_(phase_calls), K_(phase_health_us), K(ret));
+      phase_status_ = task_status_;
+      phase_start_us_ = call_end_us;
+      phase_active_us_ = 0;
+      phase_health_us_ = 0;
+      phase_calls_ = 0;
+    }
+  }
   return ret;
 }
 
@@ -305,6 +334,7 @@ int ObFtsIndexBuildTask::deep_copy_index_arg(
 
 int ObFtsIndexBuildTask::check_health()
 {
+  const int64_t health_start_us = ObTimeUtility::current_time();
   int ret = OB_SUCCESS;
   const ObDDLTaskStatus status = static_cast<ObDDLTaskStatus>(task_status_);
   if (OB_UNLIKELY(!is_inited_)) {
@@ -348,6 +378,7 @@ int ObFtsIndexBuildTask::check_health()
     }
   }
   check_ddl_task_execute_too_long();
+  phase_health_us_ += MAX(0, ObTimeUtility::current_time() - health_start_us);
   return ret;
 }
 

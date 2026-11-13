@@ -225,6 +225,13 @@ private:
   bool use_doc_id_;
   int64_t rowkey_doc_schema_version_;
   ObCharsetType charset_type_;
+  // Scheduler-thread diagnostics only; reset when a recovered task resumes.
+  // These counters are intentionally not persisted as task state.
+  int64_t phase_status_;
+  int64_t phase_start_us_;
+  int64_t phase_active_us_;
+  int64_t phase_health_us_;
+  int64_t phase_calls_;
 };
 
 } // end namespace rootserver

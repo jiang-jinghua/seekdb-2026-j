@@ -1105,3 +1105,66 @@ Raw logs: [baseline 1](fts-tuning-results/fts-word-equal-before1.txt),
 [baseline 2](fts-tuning-results/fts-word-equal-before2.txt),
 [candidate 1](fts-tuning-results/fts-word-equal-after1.txt),
 [candidate 2](fts-tuning-results/fts-word-equal-after2.txt).
+
+## Build-phase diagnostics and rejected polling experiment (2026-11-13)
+
+This change reverts c99f2f7a3's identical-word shortcut, which had not shown
+stable benefit. It adds scheduler-owned, nonpersistent FTS task counters and
+one INFO record per completed phase (or final task visit), rather than per
+poll. Search seekdb.log for `fts build phase timing` and group by task_id and
+index_table_id. phase_status/task_status identify the transition; elapsed_us
+is observed phase wall time, phase_active_us is cumulative process() wall
+time, phase_health_us is the check_health() subset, and phase_calls counts
+scheduler visits. These are not CPU measurements. Logging itself is outside
+the measured call time. Recovery starts a new observation window; these are
+not durable or whole-task lifetime measurements. Clock adjustments may affect
+wall-time measurements; negative intervals are clamped. Scheduling, checks,
+DDL persistence and failure handling are unchanged.
+
+The final release build and all 26 selected mysqltests passed. The 374-query
+corpus matched the pre-shortcut baseline byte for byte, with an empty error
+stream. All 54 collected phase records satisfied elapsed >= active >= health
+and had positive call counts. In one recovered task's WAIT_AUX_TABLE_COMPLEMENT
+phase, 137 visits accumulated 289011 us in process(), of which 256338 us
+(88.7%) was in check_health(); phase wall time was 1944938 us. This local
+observation identifies health checks as a follow-up investigation, not proof
+of the cause of official-CI long tails. In particular, refresh_status() calls
+switch_status(), which performs a transaction and SELECT FOR UPDATE even
+when the state is unchanged. Cancellation/recovery semantics must be retained
+in any future attempt to optimize that path.
+
+A 50 ms rate limit on fallback child-result-table reads was implemented,
+built and passed all 26 regressions, but was rejected and fully removed:
+build totals were baseline 4.785/4.901 s versus candidate 5.041/4.982 s;
+process CPU was 13.20/12.84 s versus 13.62/12.62 s. The baseline binary had
+phase timing but not the health subset counter; both sides omitted the
+identical-word shortcut. All four hit counts remained unchanged. No completed
+runs were excluded. The rate limit has no presence in the final source.
+
+An initial extra recovery fixture using CREATE TABLE LIKE failed during setup.
+A subsequent benchmark on that reused instance stalled at DROP DATABASE with
+OB_EAGAIN and was stopped; it did not reach index timing and is not counted
+as a successful benchmark or recovery test. The instance was preserved.
+On a separate fresh instance the final binary completed two unchanged full
+benchmarks (build total 4.869/4.689 s; IK tokenize 0.0469/0.0479 ms; BENG
+0.0346/0.0329 ms). These fresh-instance runs are not a controlled performance
+comparison with the older reused-instance runs. No score improvement is
+claimed for diagnostic instrumentation.
+
+A corrected recovery fixture explicitly created a table with 20000 copied
+rows. The CREATE FULLTEXT INDEX client was still running when its own server
+was gracefully stopped after 250 ms. After restart, the index became queryable
+and MATCH returned 4000, equal to the original index. The interrupted client
+exit was expected. The temporary table was dropped and the own server stopped.
+This covers graceful restart during build, not crash/power-loss recovery or
+all missed-callback/failure scenarios. Benchmark/scoring SQL was unchanged.
+
+Evidence: [phase records](fts-tuning-results/fts-phase-final-phases.txt),
+[regressions](fts-tuning-results/fts-phase-regressions.txt),
+[restart](fts-tuning-results/fts-phase-recovery.txt),
+[final run 1](fts-tuning-results/fts-phase-final1.txt),
+[final run 2](fts-tuning-results/fts-phase-final2.txt),
+[rejected baseline 1](fts-tuning-results/fts-child-poll-before1.txt),
+[rejected baseline 2](fts-tuning-results/fts-child-poll-before2.txt),
+[rejected candidate 1](fts-tuning-results/fts-child-poll-after1.txt),
+[rejected candidate 2](fts-tuning-results/fts-child-poll-after2.txt).

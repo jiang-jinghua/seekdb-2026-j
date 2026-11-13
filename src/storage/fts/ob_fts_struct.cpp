@@ -46,15 +46,6 @@ bool ObFTWord::operator==(const ObFTWord &other) const
   ObDatumCmpFuncType func = get_datum_cmp_func(meta_, other.meta_);
   if (func == nullptr) {
     ob_abort();
-  } else if (meta_.get_type() == ObVarcharType
-             && other.meta_.get_type() == ObVarcharType
-             && meta_.get_collation_type() == other.meta_.get_collation_type()
-             && !word_.is_null() && !other.word_.is_null()
-             && word_.len_ == other.word_.len_
-             && (word_.len_ == 0 || MEMCMP(word_.ptr_, other.word_.ptr_, word_.len_) == 0)) {
-    // Equal bytes are equal under the same string collation. Different bytes
-    // must still use the collation comparator (case, accents and padding).
-    is_equal = true;
   } else if (OB_FAIL(func(word_, other.word_, cmp_ret, nullptr))) {
     ob_abort();
   } else {

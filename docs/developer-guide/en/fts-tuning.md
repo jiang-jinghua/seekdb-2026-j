@@ -1015,3 +1015,55 @@ Raw logs: [before 1](fts-tuning-results/fts-trim-scan-before1.txt),
 Diagnostic [SQL](fts-tuning-results/fts-trim-scan-micro.sql),
 [before](fts-tuning-results/fts-trim-scan-before-micro.txt),
 [after](fts-tuning-results/fts-trim-scan-after-micro.txt).
+
+## Defer copying unchanged words until stopword filtering (2026-11-13)
+
+ObAddWord previously copied known-unchanged lowercase UTF-8 bytes before
+checking stopword membership. That path now borrows bytes for the synchronous
+check and copies only retained words, before any map insertion. Actual case
+conversion keeps its original allocated storage. Paths without casedown keep
+their old behavior. Thus retained map keys still outlive parser scratch buffers,
+while filtered unchanged words no longer consume an allocation/copy here.
+
+This applies only to parsers enabling ObAddWord's casedown flag, such as IK;
+BENG performs its own normalization and is not directly optimized by this
+change. It does not deduplicate allocations for retained repeated words.
+
+The release build and all 26 selected mysqltest cases passed before the new
+focused cases were added. The expanded beng_case_conversion case then passed
+against baseline-recorded output on the candidate. It adds dense stopwords,
+repeated retained words, uppercase and Unicode inputs for BENG and IK. An
+initial test fixture had local-codepage Chinese bytes; it was corrected to
+UTF-8 before recording final expected output. A long repeated IK input still
+returned Invalid argument on the baseline after correction; it was shortened
+to an accepted input. No success coverage is claimed for that rejected long
+input. The 374-query corpus was byte-identical with empty SQL error streams.
+
+Complete unchanged benchmarks against bf19bb562:
+
+| Run | Total build (s) | IK tokenize (ms) | Process CPU (s) |
+| --- | ---: | ---: | ---: |
+| Baseline 1 | 4.792 | 0.0491 | 12.10 |
+| Baseline 2 | 4.632 | 0.0482 | 11.85 |
+| Baseline 3 | 4.708 | 0.0485 | 12.39 |
+| Candidate 1 | 4.721 | 0.0460 | 11.94 |
+| Candidate 2 | 4.737 | 0.0486 | 12.08 |
+| Candidate 3 | 5.031 | 0.0619 | 13.42 |
+
+These results do not establish throughput improvement: candidate means were
+worse. This is a memory-allocation candidate, not a demonstrated scoring gain.
+BENG timing changes cannot be attributed directly to this change. Process CPU
+includes background/shared-host work. No outlier was excluded.
+
+Order was baseline 1-2, candidate 1-2, baseline 3, candidate 3. Each restart
+ran the same corpus warmup. New focused tests were run outside the timed
+benchmarks. No compiler/regressions overlapped timing. SKIP_LOAD=0, benchmark
+inputs, SQL, counts and scoring were unchanged. All four hit counts stayed
+8001/11000/7332/20.
+
+Raw logs: [before 1](fts-tuning-results/fts-deferred-copy-before1.txt),
+[before 2](fts-tuning-results/fts-deferred-copy-before2.txt),
+[before 3](fts-tuning-results/fts-deferred-copy-before3.txt),
+[after 1](fts-tuning-results/fts-deferred-copy-after1.txt),
+[after 2](fts-tuning-results/fts-deferred-copy-after2.txt),
+[after 3](fts-tuning-results/fts-deferred-copy-after3.txt).

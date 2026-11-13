@@ -146,17 +146,27 @@ int ObAddWord::process_word(
   bool is_stopword = false;
   ObFTWord src_word(word_len, word, word_meta_);
   ObFTWord dst_word;
+  bool needs_copy = false;
   if (OB_ISNULL(word) || OB_UNLIKELY(0 >= word_len || 0 >= char_cnt || 0 >= word_freq)) {
     ret = OB_INVALID_ARGUMENT;
   } else if (is_min_max_word(char_cnt)) {
     ++min_max_word_cnt_;
-  } else if (OB_FAIL(casedown_word(src_word, dst_word))) {
+  } else if (OB_FAIL(casedown_word(src_word, dst_word, needs_copy))) {
   } else if (OB_FAIL(check_stopword(dst_word, is_stopword))) {
   } else if (OB_UNLIKELY(is_stopword)) {
     ++stopword_cnt_;
-  } else if (OB_FAIL(groupby_word(dst_word, word_freq))) {
   } else {
-    non_stopword_cnt_ += word_freq;
+    if (needs_copy) {
+      ObString owned;
+      if (OB_FAIL(ob_write_string(allocator_, dst_word.get_word().get_string(), owned))) {
+      } else {
+        dst_word = ObFTWord(owned.length(), owned.ptr(), word_meta_);
+      }
+    }
+    if (OB_SUCC(ret) && OB_FAIL(groupby_word(dst_word, word_freq))) {
+    } else if (OB_SUCC(ret)) {
+      non_stopword_cnt_ += word_freq;
+    }
   }
   return ret;
 }
@@ -193,7 +203,7 @@ bool is_lowercase_utf8_word(const ObString &word)
 }
 } // namespace
 
-int ObAddWord::casedown_word(const ObFTWord &src, ObFTWord &dst)
+int ObAddWord::casedown_word(const ObFTWord &src, ObFTWord &dst, bool &needs_copy)
 {
   int ret = OB_SUCCESS;
   if (OB_UNLIKELY(src.empty())) {
@@ -201,7 +211,10 @@ int ObAddWord::casedown_word(const ObFTWord &src, ObFTWord &dst)
   } else if (flag_.casedown()) {
     ObString dst_str;
     if (is_utf8_ && is_lowercase_utf8_word(src.get_word().get_string())) {
-      ret = ob_write_string(allocator_, src.get_word().get_string(), dst_str);
+      // Borrow unchanged bytes until stopword filtering; retained words are
+      // copied before insertion so parser-buffer lifetimes remain independent.
+      dst_str = src.get_word().get_string();
+      needs_copy = true;
     } else {
       ret = ObCharset::tolower(word_meta_.get_collation_type(),
                               src.get_word().get_string(), dst_str, allocator_);

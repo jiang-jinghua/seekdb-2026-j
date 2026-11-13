@@ -55,3 +55,15 @@ tokens
 SELECT TOKENIZE(CONCAT(REPEAT('!@#$%^&*()_+-=[]{}',64),' __ab__ --alpha-- z 9'), 'beng', '[{"output":"all"}]') AS tokens;
 tokens
 {"tokens": [], "doc_len": 0}
+SELECT TOKENIZE(CONCAT(REPEAT('the with from for this that ',40),'apple banana apple'), 'beng', '[{"output":"all"}]') AS tokens;
+tokens
+{"tokens": [], "doc_len": 0}
+SELECT TOKENIZE('the THE with WITH 苹果 apple APPLE banana', 'beng', '[{"output":"all"}]') AS tokens;
+tokens
+{"tokens": [{"banana": 1}, {"apple": 2}, {"苹果": 1}], "doc_len": 4}
+SELECT TOKENIZE(CONCAT(REPEAT('the with from for this that ',2),'数据库 apple banana apple'), 'ik') AS tokens;
+tokens
+["banana", "apple", "that", "数据库", "for", "from", "with", "this", "the"]
+SELECT TOKENIZE('the THE with WITH 苹果 apple APPLE banana', 'ik') AS tokens;
+tokens
+["banana", "apple", "苹果", "with", "the"]

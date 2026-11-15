@@ -512,6 +512,59 @@ void Engine::for_each_visible(Table& t,
     const auto ops_it = staged_.find(lower_name(t.schema.name));
     const std::map<int64_t, std::optional<Row>>* ops =
         (in_txn_ && ops_it != staged_.end()) ? &ops_it->second : nullptr;
+    // Fast path (no txn overlay): stream the data file sequentially in large chunks
+    // instead of one pread per row. Frames are contiguous from offset 0; a frame is
+    // decoded only when it is the current version of some live row (offset matches).
+    // Stale versions and delete tombstones are skipped by header alone.
+    if (!ops && t.data_fd >= 0 && !t.entries.empty()) {
+        if (t.wal_buf.size() > 0) wal_flush_buf(t); // make the whole logical file readable
+        std::unordered_map<uint64_t, int64_t> want; // frame offset -> pk
+        want.reserve(t.entries.size() * 2);
+        for (const auto& kv : t.entries) want.emplace(kv.second.loc.off, kv.first);
+        const size_t CH = 1u << 20;
+        std::string pend;
+        pend.reserve(CH + (1u << 20));
+        std::vector<char> tmp(CH);
+        uint64_t frame_off = 0; // file offset of the next frame to parse
+        uint64_t read_off = 0;  // file bytes read into pend so far
+        bool broken = false;
+        while (frame_off < (uint64_t)t.file_off) {
+            if (read_off < (uint64_t)t.file_off) { // top up the parse buffer
+                size_t n = (size_t)std::min<uint64_t>(CH, (uint64_t)t.file_off - read_off);
+                if (!pread_full(t.data_fd, tmp.data(), n, read_off)) { broken = true; break; }
+                pend.append(tmp.data(), n);
+                read_off += n;
+            }
+            size_t pos = 0;
+            while (true) {
+                if (pend.size() - pos < 8) break;
+                uint32_t flen = get_u32(pend.data() + pos);
+                if (flen > (64u << 20)) { broken = true; break; }        // corrupt header
+                if (flen > (pend.size() - pos) - 8) {                    // frame spans chunks
+                    if (read_off >= (uint64_t)t.file_off) { broken = true; break; } // EOF mid-frame
+                    break;                                               // read more
+                }
+                const char* payload = pend.data() + pos + 8;
+                auto wit = want.find(frame_off);
+                if (wit != want.end() && crc32(payload, flen) == get_u32(pend.data() + pos + 4)) {
+                    const uint8_t op = (uint8_t)payload[0];
+                    if (op == OP_INSERT) { // current-version frame (tombstones are never current)
+                        Row row;
+                        decode_row_payload(payload, flen, row);
+                        fn(wit->second, row, nullptr);
+                    }
+                }
+                size_t adv = (size_t)flen + 8;
+                pos += adv;
+                frame_off += adv;
+            }
+            if (broken) break;
+            if (pos > 0) pend.erase(0, pos);
+            else if (read_off >= (uint64_t)t.file_off) { broken = true; break; } // no progress at EOF
+        }
+        if (!broken) return; // full sequential scan completed
+        // structural surprise (should not happen post-recovery): fall back below
+    }
     for (auto& kv : t.entries) {
         if (ops) {
             auto oit = ops->find(kv.first);

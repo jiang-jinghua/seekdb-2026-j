@@ -777,6 +777,10 @@ Value Engine::eval_expr(const Expr* e, const Row& row, const Schema& sch) const 
             Value r;
             r.type = ColType::DOUBLE;
             if (v.null) { r.null = true; return r; }
+            if (v.v.size() != e->l2_vec.size())
+                throw SqlError(errcode::DIM_MISMATCH,
+                               "vector dimension mismatch: column " + std::to_string(v.v.size()) +
+                               " vs query " + std::to_string(e->l2_vec.size()));
             r.d = (double)l2_distance(v.v.data(), e->l2_vec.data(), v.v.size());
             return r;
         }
@@ -1143,6 +1147,10 @@ Result Engine::execute_stmt(const Stmt& st) {
                     const Value& v = row[o.idx];
                     if (o.is_l2) {
                         Key k; k.kind = 0;
+                        if (v.v.size() != o.vec->size())
+                            throw SqlError(errcode::DIM_MISMATCH,
+                                           "vector dimension mismatch: column " + std::to_string(v.v.size()) +
+                                           " vs query " + std::to_string(o.vec->size()));
                         k.d = v.null ? 1e30 : (double)l2_distance(v.v.data(), o.vec->data(), v.v.size());
                         r.keys.push_back(k);
                     } else {
@@ -1230,6 +1238,10 @@ Result Engine::execute_stmt(const Stmt& st) {
                         else {
                             bool reuse_key = !ord.empty() && ord[0].is_l2 && ord[0].idx == p.idx &&
                                              ref.keys.size() == 1;
+                            if (v.v.size() != p.vec->size())
+                                throw SqlError(errcode::DIM_MISMATCH,
+                                               "vector dimension mismatch: column " + std::to_string(v.v.size()) +
+                                               " vs query " + std::to_string(p.vec->size()));
                             out.d = reuse_key ? ref.keys[0].d
                                               : (double)l2_distance(v.v.data(), p.vec->data(), v.v.size());
                         }

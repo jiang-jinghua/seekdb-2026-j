@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -471,6 +472,7 @@ void Engine::put_row(Table& t, int64_t pk, Loc loc, std::shared_ptr<Row> row) {
         it->second.loc = loc;
     if (row) {
         size_t b = row_bytes(*row);
+        if (it->second.cache) t.cache_bytes -= row_bytes(*it->second.cache); // replace accounting
         it->second.cache = std::move(row);
         t.cache_bytes += b;
         t.cache_q.push_back(pk);
@@ -1151,7 +1153,8 @@ Result Engine::execute_stmt(const Stmt& st) {
                             throw SqlError(errcode::DIM_MISMATCH,
                                            "vector dimension mismatch: column " + std::to_string(v.v.size()) +
                                            " vs query " + std::to_string(o.vec->size()));
-                        k.d = v.null ? 1e30 : (double)l2_distance(v.v.data(), o.vec->data(), v.v.size());
+                        k.d = v.null ? std::numeric_limits<double>::max()
+                                     : l2_distance(v.v.data(), o.vec->data(), v.v.size());
                         r.keys.push_back(k);
                     } else {
                         r.keys.push_back(key_from_value(v));

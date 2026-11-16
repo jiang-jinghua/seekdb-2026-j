@@ -1800,7 +1800,7 @@
 
 - name: _ob_ddl_temp_file_compress_func
   type: STR_WITH_CHECKER
-  default: "AUTO"
+  default: "NONE"
   section: OBSERVER
   edit_level: DYNAMIC_EFFECTIVE
   description: "specific compression in ObTempBlockStore.AUTO: use compression algorithm from table schema;ZSTD: use ZSTD compression algorithm;NONE: do not use compression."

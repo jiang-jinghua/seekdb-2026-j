@@ -35,6 +35,9 @@ int ObFTDictHub::init()
   if (OB_FAIL(dict_map_.create(K_MAX_DICT_BUCKET, "dict_map"))) {
   } else if (OB_FAIL(rw_dict_lock_.init(K_MAX_DICT_BUCKET))) {
   } else {
+    for (int32_t i = 0; i < static_cast<int32_t>(sizeof(pins_) / sizeof(pins_[0])); ++i) {
+      pins_[i].count_ = 0;
+    }
     is_inited_ = true;
   }
   return ret;
@@ -42,8 +45,48 @@ int ObFTDictHub::init()
 
 int ObFTDictHub::destroy()
 {
+  for (int32_t i = 0; i < static_cast<int32_t>(sizeof(pins_) / sizeof(pins_[0])); ++i) {
+    pins_[i].reset();
+  }
   int ret = OB_SUCCESS;
   is_inited_ = false;
+  return ret;
+}
+
+int ObFTDictHub::pin_dict_handles(const ObFTDictType type, ObFTCacheRangeContainer &container)
+{
+  int ret = OB_SUCCESS;
+  const int32_t type_idx = static_cast<int32_t>(type);
+  const int32_t pin_cnt = static_cast<int32_t>(sizeof(pins_) / sizeof(pins_[0]));
+  if (type_idx < 0 || type_idx >= pin_cnt) {
+    // unsupported dict type, nothing to pin
+  } else if (container.get_handles().size() > ObFTDictPins::K_MAX_PINNED_RANGES) {
+    STORAGE_FTS_LOG(WARN, "too many dict ranges to pin, skip", K(type));
+  } else {
+    ObFTDictPins &pins = pins_[type_idx];
+    pins.reset();
+    int32_t idx = 0;
+    for (ObList<ObFTCacheRangeHandle *, ObIAllocator>::const_iterator iter = container.get_handles().begin();
+         iter != container.get_handles().end() && idx < ObFTDictPins::K_MAX_PINNED_RANGES;
+         ++iter, ++idx) {
+      ObFTCacheRangeHandle *handle = *iter;
+      if (OB_NOT_NULL(handle) && handle->handle_.is_valid()) {
+        pins.handles_[idx].assign(handle->handle_);
+      }
+    }
+    pins.count_ = idx;
+  }
+  return ret;
+}
+
+int ObFTDictHub::unpin_dict_handles(const ObFTDictType type)
+{
+  int ret = OB_SUCCESS;
+  const int32_t type_idx = static_cast<int32_t>(type);
+  const int32_t pin_cnt = static_cast<int32_t>(sizeof(pins_) / sizeof(pins_[0]));
+  if (type_idx >= 0 && type_idx < pin_cnt) {
+    pins_[type_idx].reset();
+  }
   return ret;
 }
 int ObFTDictHub::build_cache(const ObFTDictDesc &desc, ObFTCacheRangeContainer &container)
@@ -73,9 +116,14 @@ int ObFTDictHub::build_cache(const ObFTDictDesc &desc, ObFTCacheRangeContainer &
 
     if (OB_FAIL(ret)) {
       if (OB_ENTRY_NOT_EXIST == ret) {
+        unpin_dict_handles(desc.type_);
         if (OB_FAIL(ObFTRangeDict::build_cache_from_ik_dict(desc, container))) {
         } else if (FALSE_IT(info.range_count_ = container.get_handles().size())) {
         } else if (OB_FAIL(put_dict_info(key, info))) {
+        } else {
+          // builtin dicts are immutable, keep their DAT blocks resident so
+          // later parser instances load them from cache instead of rebuilding.
+          pin_dict_handles(desc.type_, container);
         }
       }
     }

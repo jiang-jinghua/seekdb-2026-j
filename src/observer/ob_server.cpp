@@ -95,6 +95,8 @@ int ObServer::get_lower_bound_freeze_info(const int64_t snapshot_version, share:
 #include "storage/fts/dict/ob_ft_cache.h"
 #include "lib/utility/ob_target_specific.h"
 #include "storage/fts/dict/ob_gen_dic_loader.h"
+#include "storage/fts/dict/ob_ft_dict_hub.h"
+#include "storage/fts/dict/ob_ft_cache_container.h"
 #include "data_plane/fts/ob_fts_parser_helper.h"
 #include "rpc/ob_request.h"
 #include "storage/blocksstable/ob_block_sstable_struct.h"
@@ -892,6 +894,12 @@ int ObServer::init(const ObServerOptions &opts, const ObPLogWriterCfg &log_cfg)
   } else {
     FLOG_INFO("[OBSERVER_NOTICE] success to init observer",
         "lib::g_runtime_enabled", lib::g_runtime_enabled);
+    // warm the builtin FTS dictionaries now that the KVCache is up; keeps
+    // the first fulltext index DDL after a restart from building DAT tries.
+    int tmp_ret = prewarm_ft_dict();
+    if (OB_UNLIKELY(OB_SUCCESS != tmp_ret)) {
+      LOG_WARN("failed to prewarm fulltext dict, ignore", K(tmp_ret));
+    }
     LOG_DBA_INFO_V2(OB_SERVER_INIT_SUCCESS,
                     DBA_STEP_INC_INFO(server_start),
                     "observer init success.");
@@ -2138,6 +2146,44 @@ int ObServer::init_interrupt()
     ret = OB_ALLOCATE_MEMORY_FAILED;
     LOG_ERROR("fail get interrupt mgr instance", KR(ret));
   } else if (OB_FAIL(mgr->init())) {
+  }
+  return ret;
+}
+
+int ObServer::prewarm_ft_dict()
+{
+  int ret = OB_SUCCESS;
+  storage::ObFTDictHub *hub = nullptr;
+  if (OB_FAIL(storage::ObFTParseData::instance().get_dict_hub(hub))) {
+  } else if (OB_ISNULL(hub)) {
+    ret = OB_ERR_UNEXPECTED;
+  } else {
+    // Builtin IK dictionaries are immutable. Building their double-array
+    // tries here (parallel, off the query path) keeps the first fulltext
+    // index DDL or tokenize call after a restart from paying the cost.
+    const storage::ObFTDictDesc descs[] = {
+      storage::ObFTDictDesc("main_dict",
+                            storage::ObFTDictType::DICT_IK_MAIN,
+                            ObCharsetType::CHARSET_UTF8MB4,
+                            ObCollationType::CS_TYPE_UTF8MB4_BIN),
+      storage::ObFTDictDesc("quan_dict",
+                            storage::ObFTDictType::DICT_IK_QUAN,
+                            ObCharsetType::CHARSET_UTF8MB4,
+                            ObCollationType::CS_TYPE_UTF8MB4_BIN),
+      storage::ObFTDictDesc("stopword",
+                            storage::ObFTDictType::DICT_IK_STOP,
+                            ObCharsetType::CHARSET_UTF8MB4,
+                            ObCollationType::CS_TYPE_UTF8MB4_BIN),
+    };
+    for (int64_t i = 0; OB_SUCC(ret) && i < static_cast<int64_t>(sizeof(descs) / sizeof(descs[0])); ++i) {
+      ObArenaAllocator tmp_alloc(ObMemAttr("FTDictPrewarm"));
+      storage::ObFTCacheRangeContainer container(tmp_alloc);
+      int tmp_ret = hub->build_cache(descs[i], container);
+      if (OB_UNLIKELY(OB_SUCCESS != tmp_ret)) {
+        // startup must not depend on the warm-up; the DDL path rebuilds it.
+        LOG_WARN("failed to prewarm fulltext dict cache, ignore", K(tmp_ret));
+      }
+    }
   }
   return ret;
 }

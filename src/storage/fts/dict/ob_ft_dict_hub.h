@@ -19,6 +19,7 @@
 
 #include "lib/charset/ob_charset.h"
 #include "lib/lock/ob_bucket_lock.h"
+#include "share/cache/ob_kv_storecache.h"
 #include "storage/fts/dict/ob_ft_dict_def.h"
 
 namespace oceanbase
@@ -27,6 +28,28 @@ namespace storage
 {
 // typedef uint64_t ObFTTableID;
 // typedef ObFTTableID ObFTDictTableID;
+
+// Builtin dictionaries are immutable and small enough to stay resident.
+// Holding one handle per dict range keeps the KVCache entry alive forever,
+// so consecutive parser/DDL workloads never rebuild the double-array trie.
+class ObFTDictPins
+{
+public:
+  enum { K_MAX_PINNED_RANGES = 256 };
+  ObFTDictPins() : count_(0) {}
+  void reset()
+  {
+    for (int32_t i = 0; i < count_; ++i) {
+      handles_[i].reset();
+    }
+    count_ = 0;
+  }
+  ObKVCacheHandle handles_[K_MAX_PINNED_RANGES];
+  int32_t count_;
+
+private:
+  DISALLOW_COPY_AND_ASSIGN(ObFTDictPins);
+};
 
 class ObFTDictInfo
 {
@@ -112,12 +135,15 @@ private:
 
   int put_dict_info(const ObFTDictInfoKey &key, const ObFTDictInfo &info);
 
+  int pin_dict_handles(const ObFTDictType type, ObFTCacheRangeContainer &container);
+  int unpin_dict_handles(const ObFTDictType type);
 
 private:
   bool is_inited_;
   // holds info of dict
   hash::ObHashMap<ObFTDictInfoKey, ObFTDictInfo> dict_map_;
   ObBucketLock rw_dict_lock_;
+  ObFTDictPins pins_[static_cast<int32_t>(ObFTDictType::DICT_IK_STOP) + 1];
 };
 
 } //  namespace storage

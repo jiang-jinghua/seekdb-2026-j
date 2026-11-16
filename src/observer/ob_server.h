@@ -356,6 +356,7 @@ private:
   int init_network();
   int init_interrupt();
   int init_fts();
+  int prewarm_ft_dict();
   int init_server_runtime();
   int init_sql_proxy();
   int init_io();

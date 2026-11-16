@@ -311,6 +311,31 @@ static int ob_strnncoll_utf8mb4(const ObCharsetInfo *cs,
   const unsigned char *se = src + srclen;
   const unsigned char *te = dst + dstlen;
   ObUnicaseInfo *uni_plane = cs->caseinfo;
+  // ASCII fast path, same rationale as in ob_strnncollsp_utf8mb4
+  size_t common_len = srclen < dstlen ? srclen : dstlen;
+  size_t i = 0;
+  while (i < common_len) {
+    const unsigned char c1 = src[i];
+    const unsigned char c2 = dst[i];
+    if ((c1 | c2) & 0x80) {
+      break;
+    }
+    ob_wc_t w1 = c1, w2 = c2;
+    ob_tosort_unicode(uni_plane, &w1, cs->state);
+    ob_tosort_unicode(uni_plane, &w2, cs->state);
+    if (w1 != w2) {
+      return w1 > w2 ? 1 : -1;
+    }
+    ++i;
+  }
+  if (i > 0) {
+    src += i;
+    dst += i;
+    srclen -= i;
+    dstlen -= i;
+    se = src + srclen;
+    te = dst + dstlen;
+  }
   while ( src < se && dst < te ) {
     int s_res = ob_mb_wc_utf8mb4(cs, &src_wc, src, se);
     int t_res = ob_mb_wc_utf8mb4(cs, &dst_wc, dst, te);
@@ -381,6 +406,38 @@ static int ob_strnncollsp_utf8mb4(const ObCharsetInfo *cs,
   ob_wc_t src_wc = 0, dst_wc = 0;
   const unsigned char *se= src + srclen, *te= dst + dstlen;
   ObUnicaseInfo *uni_plane= cs->caseinfo;
+  // ASCII fast path: while both strings only contain single-byte (ASCII)
+  // characters, compare case-folded bytes directly instead of running the
+  // full UTF-8 decoder per character. Order is identical to the general
+  // path because each ASCII byte is exactly one code point and the fold
+  // uses the same weight table.
+  size_t common_len = srclen < dstlen ? srclen : dstlen;
+  size_t i = 0;
+  while (i < common_len) {
+    const unsigned char c1 = src[i];
+    const unsigned char c2 = dst[i];
+    if ((c1 | c2) & 0x80) {
+      break; // non-ASCII content: resume the general path from offset i
+    }
+    ob_wc_t w1 = c1, w2 = c2;
+    ob_tosort_unicode(uni_plane, &w1, cs->state);
+    ob_tosort_unicode(uni_plane, &w2, cs->state);
+    if (w1 != w2) {
+      return w1 > w2 ? 1 : -1;
+    }
+    ++i;
+  }
+  if (i > 0) {
+    // skip the fully-equal ASCII prefix; byte offsets i are always at a
+    // character boundary (a continuation byte cannot appear before its
+    // leading byte, which would have broken out of the loop earlier)
+    src += i;
+    dst += i;
+    srclen -= i;
+    dstlen -= i;
+    se = src + srclen;
+    te = dst + dstlen;
+  }
   while ( src < se && dst < te ) {
     int s_res= ob_mb_wc_utf8mb4(cs, &src_wc, src, se);
     int t_res= ob_mb_wc_utf8mb4(cs, &dst_wc, dst, te);

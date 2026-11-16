@@ -1,5 +1,8 @@
 #include "lexer.h"
 
+#include <cerrno>
+#include <cstdlib>
+
 static bool is_ident_start(char c) {
     return std::isalpha((unsigned char)c) || c == '_';
 }
@@ -53,7 +56,16 @@ std::vector<Token> lex(const std::string& sql) {
             std::string num = sql.substr(start, i - start);
             Token t; t.type = TokType::NUMBER; t.is_float = fl; t.text = num;
             if (fl) t.dnum = std::strtod(num.c_str(), nullptr);
-            else    t.num = std::strtoll(num.c_str(), nullptr, 10);
+            else {
+                // reject out-of-range integer literals instead of silently saturating:
+                // 9223372036854775808 must not become 9223372036854775807 (it would
+                // collide with a real primary key and surface as duplicate_key).
+                errno = 0;
+                char* endp = nullptr;
+                t.num = std::strtoll(num.c_str(), &endp, 10);
+                if (errno == ERANGE || (endp && *endp != '\0'))
+                    throw SqlError(errcode::INVALID_VALUE, "integer literal out of range: " + num);
+            }
             out.push_back(std::move(t));
             continue;
         }

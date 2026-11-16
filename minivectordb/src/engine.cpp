@@ -844,11 +844,13 @@ Result Engine::execute(const Stmt& st) {
 Result Engine::execute_stmt(const Stmt& st) {
     switch (st.type) {
         case StmtType::CREATE_TABLE: {
-            // DDL is auto-committed immediately
+            // MySQL semantics: DDL implicitly commits the current transaction
+            if (in_txn_) txn_commit();
             create_table(st.schema);
             return {};
         }
         case StmtType::DROP_TABLE: {
+            if (in_txn_) txn_commit(); // MySQL semantics: DDL implicitly commits
             drop_table(st.table);
             return {};
         }
@@ -1005,6 +1007,7 @@ Result Engine::execute_stmt(const Stmt& st) {
             return r;
         }
         case StmtType::CREATE_VECTOR_INDEX: {
+            if (in_txn_) txn_commit(); // MySQL semantics: DDL implicitly commits
             Table& t = *get_table(st.table);
             int idx = t.schema.find_col(st.index_col);
             if (idx < 0) throw SqlError(errcode::COL_MISSING, "unknown column: " + st.index_col);
@@ -1018,6 +1021,7 @@ Result Engine::execute_stmt(const Stmt& st) {
             return {};
         }
         case StmtType::DROP_VECTOR_INDEX: {
+            if (in_txn_) txn_commit(); // MySQL semantics: DDL implicitly commits
             bool dropped = false;
             auto drop_from = [&](Table& t) {
                 for (auto it = t.indexes.begin(); it != t.indexes.end(); ++it) {
@@ -1119,14 +1123,14 @@ Result Engine::execute_stmt(const Stmt& st) {
 
             // order key: exact comparisons (int64 for BIGINT, string for VARCHAR, double otherwise)
             struct Key {
-                int kind = 0; // 0=double, 1=int64, 2=string
+                int kind = 0; // -1=NULL (sorts first in ASC, like SQL), 0=double, 1=int64, 2=string
                 double d = 0;
                 int64_t i = 0;
                 std::string s;
             };
             auto key_from_value = [](const Value& v) {
                 Key k;
-                if (v.null) { k.kind = 0; k.d = 0; return k; } // same as previous behavior for NULL scalars
+                if (v.null) { k.kind = -1; return k; } // SQL: NULL is the smallest key
                 if (v.type == ColType::BIGINT) { k.kind = 1; k.i = v.i; }
                 else if (v.type == ColType::DOUBLE) { k.kind = 0; k.d = v.d; }
                 else if (v.type == ColType::VARCHAR) { k.kind = 2; k.s = v.s; }
@@ -1148,13 +1152,16 @@ Result Engine::execute_stmt(const Stmt& st) {
                 for (const auto& o : ord) {
                     const Value& v = row[o.idx];
                     if (o.is_l2) {
-                        Key k; k.kind = 0;
+                        Key k;
+                        // NULL vectors carry no dimension: they must not trip the mismatch
+                        // check, and they sort as SQL NULL (first ASC, last DESC).
+                        if (v.null) { k.kind = -1; r.keys.push_back(k); continue; }
+                        k.kind = 0;
                         if (v.v.size() != o.vec->size())
                             throw SqlError(errcode::DIM_MISMATCH,
                                            "vector dimension mismatch: column " + std::to_string(v.v.size()) +
                                            " vs query " + std::to_string(o.vec->size()));
-                        k.d = v.null ? std::numeric_limits<double>::max()
-                                     : l2_distance(v.v.data(), o.vec->data(), v.v.size());
+                        k.d = l2_distance(v.v.data(), o.vec->data(), v.v.size());
                         r.keys.push_back(k);
                     } else {
                         r.keys.push_back(key_from_value(v));

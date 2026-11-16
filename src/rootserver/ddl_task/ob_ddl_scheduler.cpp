@@ -1397,6 +1397,26 @@ int ObDDLScheduler::get_task_record(const ObDDLTaskID &task_id,
   return ret;
 }
 
+int ObDDLScheduler::check_task_in_queue(const int64_t task_id, bool &in_queue)
+{
+  int ret = OB_SUCCESS;
+  in_queue = false;
+  if (OB_UNLIKELY(task_id <= 0)) {
+    ret = OB_INVALID_ARGUMENT;
+  } else {
+    ret = task_queue_.modify_task(ObDDLTaskID(task_id), [&in_queue](ObDDLTask &task) -> int {
+      UNUSED(task);
+      in_queue = true;
+      return OB_SUCCESS;
+    });
+    if (OB_ENTRY_NOT_EXIST == ret) {
+      // the task is not scheduled locally (maybe finished or on another node)
+      ret = OB_SUCCESS;
+    }
+  }
+  return ret;
+}
+
 int ObDDLScheduler::modify_redef_task(const ObDDLTaskID &task_id, ObRedefCallback &cb)
 {
   int ret = OB_SUCCESS;

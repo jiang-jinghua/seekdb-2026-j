@@ -313,10 +313,11 @@ public:
       const ObDDLTaskKey &task_key,
       const uint64_t autoinc_val,
       const int ret_code);
-  int get_task_record(const ObDDLTaskID &task_id, 
+  int get_task_record(const ObDDLTaskID &task_id,
                       ObISQLClient &trans,
                       ObDDLTaskRecord &task_record,
                       common::ObIAllocator &allocator);
+  int check_task_in_queue(const int64_t task_id, bool &in_queue);
   int modify_redef_task(const ObDDLTaskID &task_id, ObRedefCallback &cb);
   int abort_redef_table(const ObDDLTaskID &task_id);
 

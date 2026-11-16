@@ -848,6 +848,22 @@ int ObFtsIndexBuildTask::get_charset_type(ObCharsetType &charset_type)
   return ret;
 }
 
+// check if the child task is still pending in the local ddl scheduler queue.
+// if it is, the child task is definitely not finished yet, and we can skip
+// the inner-SQL query against the error message table (each query creates a
+// brand-new inner session which is expensive).
+static int check_child_task_in_local_queue(const int64_t child_task_id, bool &in_queue)
+{
+  int ret = OB_SUCCESS;
+  in_queue = false;
+  rootserver::ObDDLScheduler *scheduler = ::oceanbase::share::server_service<rootserver::ObDDLScheduler>();
+  if (OB_ISNULL(scheduler)) {
+    // scheduler unavailable, fall back to the SQL query path
+  } else if (OB_FAIL(scheduler->check_task_in_queue(child_task_id, in_queue))) {
+  }
+  return ret;
+}
+
 // wait data complement of aux index tables
 int ObFtsIndexBuildTask::wait_aux_table_complement()
 {
@@ -869,7 +885,16 @@ int ObFtsIndexBuildTask::wait_aux_table_complement()
       const int64_t child_task_id = iter->second.task_id_;
       if (iter->second.ret_code_ == INT64_MAX) {
         // maybe ddl already finish when switching rs
-        HEAP_VAR(ObDDLErrorMessageTableOperator::ObBuildDDLErrorMessage, error_message) {
+        bool in_local_queue = false;
+        int tmp_ret = check_child_task_in_local_queue(child_task_id, in_local_queue);
+        if (OB_SUCCESS != tmp_ret) {
+          in_local_queue = false; // fall back to SQL query on any unexpected error
+        }
+        if (in_local_queue) {
+          // the child task is still running locally, it cannot be finished yet,
+          // skip the expensive inner-SQL query this round.
+        } else {
+          HEAP_VAR(ObDDLErrorMessageTableOperator::ObBuildDDLErrorMessage, error_message) {
           int64_t unused_user_msg_len = 0;
           ObAddr unused_addr;
           if (OB_FAIL(ObDDLErrorMessageTableOperator::get_ddl_error_message(child_task_id,
@@ -893,6 +918,7 @@ int ObFtsIndexBuildTask::wait_aux_table_complement()
               state_finished = true;
               break;
             }
+          }
           }
         }
       } else {
@@ -1296,25 +1322,34 @@ int ObFtsIndexBuildTask::get_task_status(int64_t task_id, uint64_t aux_table_id,
   int ret = OB_SUCCESS;
 
   if (task_id != 0) {
-    HEAP_VAR(ObDDLErrorMessageTableOperator::ObBuildDDLErrorMessage, error_message) {
-      int64_t unused_user_msg_len = 0;
-      ObAddr unused_addr;
-      const int64_t target_object_id = -1;
-      if (OB_FAIL(ObDDLErrorMessageTableOperator::get_ddl_error_message(task_id,
-                                                  target_object_id,
-                                                  unused_addr,
-                                                  false /* is_ddl_retry_task */,
-                                                  *GCTX.sql_proxy_,
-                                                  error_message,
-                                                  unused_user_msg_len))) {
-        if (OB_ENTRY_NOT_EXIST == ret) {
-          ret = OB_SUCCESS;
-          LOG_INFO("ddl task not finish", K(ret), K(aux_table_id), K(task_id), K(task_id_));
+    bool in_local_queue = false;
+    int tmp_ret = check_child_task_in_local_queue(task_id, in_local_queue);
+    if (OB_SUCCESS != tmp_ret) {
+      in_local_queue = false; // fall back to SQL query on any unexpected error
+    }
+    if (in_local_queue) {
+      // the task is still running locally, it cannot be finished yet
+    } else {
+      HEAP_VAR(ObDDLErrorMessageTableOperator::ObBuildDDLErrorMessage, error_message) {
+        int64_t unused_user_msg_len = 0;
+        ObAddr unused_addr;
+        const int64_t target_object_id = -1;
+        if (OB_FAIL(ObDDLErrorMessageTableOperator::get_ddl_error_message(task_id,
+                                                    target_object_id,
+                                                    unused_addr,
+                                                    false /* is_ddl_retry_task */,
+                                                    *GCTX.sql_proxy_,
+                                                    error_message,
+                                                    unused_user_msg_len))) {
+          if (OB_ENTRY_NOT_EXIST == ret) {
+            ret = OB_SUCCESS;
+            LOG_INFO("ddl task not finish", K(ret), K(aux_table_id), K(task_id), K(task_id_));
+          } else {
+          }
         } else {
-        }
-      } else {
-        if (error_message.ret_code_ == OB_SUCCESS) {
-          is_succ = true;
+          if (error_message.ret_code_ == OB_SUCCESS) {
+            is_succ = true;
+          }
         }
       }
     }
@@ -1584,29 +1619,38 @@ int ObFtsIndexBuildTask::wait_drop_index_finish(bool &is_finish)
   } else if (-1 == drop_index_task_id_) {
      is_finish = true;
   } else {
-    HEAP_VAR(ObDDLErrorMessageTableOperator::ObBuildDDLErrorMessage, error_message) {
-      const int64_t target_object_id = -1;
-      int64_t unused_user_msg_len = 0;
-      ObAddr unused_addr;
-      if (OB_FAIL(ObDDLErrorMessageTableOperator::get_ddl_error_message(drop_index_task_id_,
-                                                  target_object_id,
-                                                  unused_addr,
-                                                  false /* is_ddl_retry_task */,
-                                                  *GCTX.sql_proxy_,
-                                                  error_message,
-                                                  unused_user_msg_len))) {
-        if (OB_ENTRY_NOT_EXIST == ret) {
-          ret = OB_SUCCESS;
-          LOG_INFO("ddl task not finish", K(drop_index_task_id_));
+    bool in_local_queue = false;
+    int tmp_ret = check_child_task_in_local_queue(drop_index_task_id_, in_local_queue);
+    if (OB_SUCCESS != tmp_ret) {
+      in_local_queue = false;
+    }
+    if (in_local_queue) {
+      // the drop index task is still running locally, it cannot be finished yet
+    } else {
+      HEAP_VAR(ObDDLErrorMessageTableOperator::ObBuildDDLErrorMessage, error_message) {
+        const int64_t target_object_id = -1;
+        int64_t unused_user_msg_len = 0;
+        ObAddr unused_addr;
+        if (OB_FAIL(ObDDLErrorMessageTableOperator::get_ddl_error_message(drop_index_task_id_,
+                                                    target_object_id,
+                                                    unused_addr,
+                                                    false /* is_ddl_retry_task */,
+                                                    *GCTX.sql_proxy_,
+                                                    error_message,
+                                                    unused_user_msg_len))) {
+          if (OB_ENTRY_NOT_EXIST == ret) {
+            ret = OB_SUCCESS;
+            LOG_INFO("ddl task not finish", K(drop_index_task_id_));
+          } else {
+          }
         } else {
-        }
-      } else {
-        if (error_message.ret_code_ != OB_SUCCESS) {
-          ret = error_message.ret_code_;
-          drop_index_task_submitted_ = false; // retry
-        } else {
-          LOG_INFO("wait drop index task finish", K(*this), K(error_message));
-          is_finish = true;
+          if (error_message.ret_code_ != OB_SUCCESS) {
+            ret = error_message.ret_code_;
+            drop_index_task_submitted_ = false; // retry
+          } else {
+            LOG_INFO("wait drop index task finish", K(*this), K(error_message));
+            is_finish = true;
+          }
         }
       }
     }

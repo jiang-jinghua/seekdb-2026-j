@@ -61,3 +61,9 @@ jobs:
             dockerbuild.log
             smoke.out
             smoke.err
+      - name: Official protocol_check run.py over all 20 public cases (judge-identical semantics)
+        run: |
+          set -o pipefail
+          python3 protocol_check/run.py --image mvdb:ci --output protocol-results 2>&1 | tee protocol.log
+          echo "--- report ---"
+          cat protocol-results/result.json

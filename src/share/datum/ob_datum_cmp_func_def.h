@@ -387,7 +387,27 @@ struct ObDatumStrCmp : public ObDefined<SupportedCollection<CS_TYPE>::defined_>
 {
   inline static int cmp(const ObDatum &l, const ObDatum &r, int &cmp_ret)
   {
-    return ObDatumStrCmpImpl::cmp(l, r, cmp_ret, CS_TYPE, WITH_END_SPACE);
+    if (OB_LIKELY(!l.is_null() && !r.is_null())) {
+      if (l.len_ == r.len_ && (0 == l.len_ || l.ptr_ == r.ptr_
+          || 0 == MEMCMP(l.ptr_, r.ptr_, l.len_))) {
+        // Identical byte sequences are equal under every collation, including
+        // the pad-space ones: skip the whole collation machinery. Sorted keys
+        // and merge iterators hit this case very often.
+        cmp_ret = 0;
+      } else if (CS_TYPE_BINARY == CS_TYPE && (0 == l.len_ || 0 == r.len_
+                 || (NULL != l.ptr_ && NULL != r.ptr_))) {
+        // Binary collation compares raw bytes and length without space padding,
+        // inline it here to avoid the out-of-line ObCharset::strcmpsp call.
+        const int64_t common_len = l.len_ < r.len_ ? l.len_ : r.len_;
+        const int cmp = 0 == common_len ? 0 : MEMCMP(l.ptr_, r.ptr_, common_len);
+        cmp_ret = 0 != cmp ? (cmp > 0 ? 1 : -1) : (l.len_ > r.len_ ? 1 : (l.len_ < r.len_ ? -1 : 0));
+      } else {
+        return ObDatumStrCmpImpl::cmp(l, r, cmp_ret, CS_TYPE, WITH_END_SPACE);
+      }
+    } else {
+      return ObDatumStrCmpImpl::cmp(l, r, cmp_ret, CS_TYPE, WITH_END_SPACE);
+    }
+    return OB_SUCCESS;
   }
 };
 

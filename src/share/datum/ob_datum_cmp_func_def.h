@@ -382,17 +382,77 @@ struct ObDatumStrCmpImpl
   }
 };
 
+// Sort weight of a single byte for the case-insensitive ASCII ranges of
+// utf8mb4_general_ci: letters fold to upper case, every other byte keeps its own
+// code. This is exactly what the collation tables hold for the ASCII range.
+inline unsigned char ob_ascii_ci_weight(const unsigned char c)
+{
+  return static_cast<unsigned char>((c >= 'a' && c <= 'z') ? c - 'a' + 'A' : c);
+}
+
+// Compares two equal-length byte strings that consist of ASCII characters only,
+// using the case-folded weights above (utf8mb4_general_ci). Returns false when a
+// non-ASCII byte shows up, in which case the real collation has to decide.
+inline bool ob_ascii_ci_cmp(const ObDatum &l, const ObDatum &r, int &cmp_ret)
+{
+  const unsigned char *lp = reinterpret_cast<const unsigned char *>(l.ptr_);
+  const unsigned char *rp = reinterpret_cast<const unsigned char *>(r.ptr_);
+  const int64_t len = l.len_;
+  for (int64_t i = 0; i < len; ++i) {
+    const unsigned char lc = lp[i];
+    const unsigned char rc = rp[i];
+    if (OB_UNLIKELY(lc >= 0x80) || OB_UNLIKELY(rc >= 0x80)) {
+      return false;
+    }
+    const unsigned char lw = ob_ascii_ci_weight(lc);
+    const unsigned char rw = ob_ascii_ci_weight(rc);
+    if (lw != rw) {
+      cmp_ret = lw < rw ? -1 : 1;
+      return true;
+    }
+  }
+  cmp_ret = 0;
+  return true;
+}
+
+// Same idea for utf8mb4_bin / binary over the ASCII range: code point order is
+// byte order there, so a plain length-equal memcmp decides.
+inline bool ob_ascii_bin_cmp(const ObDatum &l, const ObDatum &r, int &cmp_ret)
+{
+  const unsigned char *lp = reinterpret_cast<const unsigned char *>(l.ptr_);
+  const unsigned char *rp = reinterpret_cast<const unsigned char *>(r.ptr_);
+  for (int64_t i = 0; i < l.len_; ++i) {
+    if (OB_UNLIKELY(lp[i] >= 0x80) || OB_UNLIKELY(rp[i] >= 0x80)) {
+      return false;
+    }
+  }
+  const int cmp = MEMCMP(lp, rp, l.len_);
+  cmp_ret = cmp > 0 ? 1 : (cmp < 0 ? -1 : 0);
+  return true;
+}
+
 template <ObCollationType CS_TYPE, bool WITH_END_SPACE>
 struct ObDatumStrCmp : public ObDefined<SupportedCollection<CS_TYPE>::defined_>
 {
   inline static int cmp(const ObDatum &l, const ObDatum &r, int &cmp_ret)
   {
     if (OB_LIKELY(!l.is_null() && !r.is_null())) {
-      if (l.len_ == r.len_ && (0 == l.len_ || l.ptr_ == r.ptr_
-          || 0 == MEMCMP(l.ptr_, r.ptr_, l.len_))) {
+      if (l.len_ == r.len_ && (0 == l.len_ || l.ptr_ == r.ptr_)) {
         // Identical byte sequences are equal under every collation, including
-        // the pad-space ones: skip the whole collation machinery. Sorted keys
-        // and merge iterators hit this case very often.
+        // the pad-space ones: skip the whole collation machinery.
+        cmp_ret = 0;
+      } else if (l.len_ == r.len_ && NULL != l.ptr_ && NULL != r.ptr_
+                 && (CS_TYPE_UTF8MB4_GENERAL_CI == CS_TYPE || CS_TYPE_UTF8MB4_BIN == CS_TYPE)) {
+        // Equal length rules out the pad-space tail logic, so pure-ASCII inputs
+        // can be ordered without decoding UTF-8 and folding every character
+        // through the unicase pages. Sorted keys share long prefixes and differ
+        // late, which makes this the hot path of index build and merge iterators.
+        const bool folded = (CS_TYPE_UTF8MB4_GENERAL_CI == CS_TYPE);
+        if ((folded && !ob_ascii_ci_cmp(l, r, cmp_ret))
+            || (!folded && !ob_ascii_bin_cmp(l, r, cmp_ret))) {
+          return ObDatumStrCmpImpl::cmp(l, r, cmp_ret, CS_TYPE, WITH_END_SPACE);
+        }
+      } else if (l.len_ == r.len_ && 0 == MEMCMP(l.ptr_, r.ptr_, l.len_)) {
         cmp_ret = 0;
       } else if (CS_TYPE_BINARY == CS_TYPE && (0 == l.len_ || 0 == r.len_
                  || (NULL != l.ptr_ && NULL != r.ptr_))) {

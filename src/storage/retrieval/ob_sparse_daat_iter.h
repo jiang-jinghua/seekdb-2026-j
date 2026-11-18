@@ -21,6 +21,7 @@
 #include "ob_sparse_utils.h"
 #include "storage/access/ob_scan_merge_loser_tree.h"
 #include "storage/access/ob_simple_rows_merger.h"
+#include "share/datum/ob_datum_cmp_func_def.h"
 
 namespace oceanbase
 {
@@ -44,19 +45,53 @@ struct ObSRMergeCmp
   virtual ~ObSRMergeCmp() {}
 
   int init(sql::ObDatumMeta id_meta, const ObFixedArray<const ObDatum *, ObIAllocator> *iter_ids);
-  int cmp(const ObSRMergeItem &l, const ObSRMergeItem &r, int64_t &cmp_ret);
-private:
-  inline const ObDatum &get_id_datum(const int64_t iter_idx)
+  // Hot path of DAAT/BMW docid merging: every merge step compares docids of the
+  // same domain. Route the common cases (equal-length ASCII strings, unsigned
+  // integers) straight to the specialized datum comparison instead of going
+  // through the indirect collation function table on every step.
+  inline int cmp(const ObSRMergeItem &l, const ObSRMergeItem &r, int64_t &cmp_ret)
   {
-    const ObDatum *datum = iter_ids_->at(iter_idx);
-    OB_ASSERT(nullptr != datum);
-    return *datum;
+    int ret = OB_SUCCESS;
+    if (OB_UNLIKELY(!is_inited_)) {
+      ret = OB_NOT_INIT;
+    } else {
+      const ObDatum &ld = *id_data_[l.iter_idx_];
+      const ObDatum &rd = *id_data_[r.iter_idx_];
+      int tmp_ret = 0;
+      if (OB_UNLIKELY(ld.is_null() || rd.is_null())) {
+        ret = cmp_func_(ld, rd, tmp_ret, nullptr);
+        cmp_ret = tmp_ret;
+      } else if (OB_LIKELY(is_uint64_)) {
+        const uint64_t lv = ld.get_uint64();
+        const uint64_t rv = rd.get_uint64();
+        cmp_ret = lv < rv ? -1 : (lv > rv ? 1 : 0);
+      } else if (OB_LIKELY(ld.len_ == rd.len_ && nullptr != ld.ptr_ && nullptr != rd.ptr_)) {
+        if (OB_LIKELY(ld.ptr_ == rd.ptr_)) {
+          cmp_ret = 0;
+        } else if (common::datum_cmp::ob_ascii_cmp_dispatch(ld, rd, cs_type_, tmp_ret)) {
+          cmp_ret = tmp_ret;
+        } else {
+          // non-ASCII bytes involved, let the real collation decide
+          ret = cmp_func_(ld, rd, tmp_ret, nullptr);
+          cmp_ret = tmp_ret;
+        }
+      } else {
+        ret = cmp_func_(ld, rd, tmp_ret, nullptr);
+        cmp_ret = tmp_ret;
+      }
+    }
+    return ret;
   }
 private:
   common::ObDatumCmpFuncType cmp_func_;
   // TODO: if memory lifetime of docid datum is guaranteed by dim_iters, we can use pointer to datum directly
   //       and avoid deep copy into merge heap here
   const ObFixedArray<const ObDatum *, ObIAllocator> *iter_ids_;
+  // raw cache of iter_ids_->get_data(): every merge step reads it, and the
+  // bounds-checked at() shows up as a top profiler entry otherwise
+  const common::ObDatum **id_data_;
+  common::ObCollationType cs_type_;
+  bool is_uint64_;
   bool is_inited_;
 };
 

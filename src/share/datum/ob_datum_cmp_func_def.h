@@ -390,15 +390,15 @@ inline unsigned char ob_ascii_ci_weight(const unsigned char c)
   return static_cast<unsigned char>((c >= 'a' && c <= 'z') ? c - 'a' + 'A' : c);
 }
 
-// Compares two equal-length byte strings that consist of ASCII characters only,
-// using the case-folded weights above (utf8mb4_general_ci). Returns false when a
-// non-ASCII byte shows up, in which case the real collation has to decide.
-inline bool ob_ascii_ci_cmp(const ObDatum &l, const ObDatum &r, int &cmp_ret)
+// Byte-wise tail of the ASCII ci comparison starting at position %begin: every
+// byte pair is validated and folded until the first difference decides the
+// result. Returns false when a non-ASCII byte shows up, in which case the real
+// collation has to decide.
+inline bool ob_ascii_ci_cmp_from(
+    const unsigned char *lp, const unsigned char *rp, const int64_t len,
+    const int64_t begin, int &cmp_ret)
 {
-  const unsigned char *lp = reinterpret_cast<const unsigned char *>(l.ptr_);
-  const unsigned char *rp = reinterpret_cast<const unsigned char *>(r.ptr_);
-  const int64_t len = l.len_;
-  for (int64_t i = 0; i < len; ++i) {
+  for (int64_t i = begin; i < len; ++i) {
     const unsigned char lc = lp[i];
     const unsigned char rc = rp[i];
     if (OB_UNLIKELY(lc >= 0x80) || OB_UNLIKELY(rc >= 0x80)) {
@@ -415,20 +415,87 @@ inline bool ob_ascii_ci_cmp(const ObDatum &l, const ObDatum &r, int &cmp_ret)
   return true;
 }
 
+// Compares two equal-length byte strings that consist of ASCII characters only,
+// using the case-folded weights above (utf8mb4_general_ci). Returns false when a
+// non-ASCII byte shows up, in which case the real collation has to decide.
+// Bytes that are equal fold to equal weights, so only the first byte difference
+// can decide the result: scan word-wise (memcmp speed) to locate it, then fold
+// just the differing pair instead of walking the whole shared prefix byte by
+// byte. Index keys of the same domain share long prefixes and differ late, which
+// makes the word-wise scan the dominant win.
+inline bool ob_ascii_ci_cmp(const ObDatum &l, const ObDatum &r, int &cmp_ret)
+{
+  const unsigned char *lp = reinterpret_cast<const unsigned char *>(l.ptr_);
+  const unsigned char *rp = reinterpret_cast<const unsigned char *>(r.ptr_);
+  const int64_t len = l.len_;
+  int64_t i = 0;
+  for (; i + 8 <= len; i += 8) {
+    uint64_t lw = 0;
+    uint64_t rw = 0;
+    MEMCPY(&lw, lp + i, 8);
+    MEMCPY(&rw, rp + i, 8);
+    const uint64_t diff = lw ^ rw;
+    if (OB_UNLIKELY(0 != diff)) {
+      // First differing byte pair; equal-after-fold chains (e.g. 'A' vs 'a')
+      // keep scanning byte-wise from here.
+      const int64_t d = i + static_cast<int64_t>(__builtin_ctzll(diff)) / 8;
+      return ob_ascii_ci_cmp_from(lp, rp, len, d, cmp_ret);
+    }
+  }
+  return ob_ascii_ci_cmp_from(lp, rp, len, i, cmp_ret);
+}
+
 // Same idea for utf8mb4_bin / binary over the ASCII range: code point order is
-// byte order there, so a plain length-equal memcmp decides.
+// byte order there, so the first byte difference of equal-length strings
+// decides. Word-wise scan keeps equal prefixes cheap; a differing pair with a
+// non-ASCII byte falls back to the real collation.
 inline bool ob_ascii_bin_cmp(const ObDatum &l, const ObDatum &r, int &cmp_ret)
 {
   const unsigned char *lp = reinterpret_cast<const unsigned char *>(l.ptr_);
   const unsigned char *rp = reinterpret_cast<const unsigned char *>(r.ptr_);
-  for (int64_t i = 0; i < l.len_; ++i) {
+  const int64_t len = l.len_;
+  int64_t i = 0;
+  for (; i + 8 <= len; i += 8) {
+    uint64_t lw = 0;
+    uint64_t rw = 0;
+    MEMCPY(&lw, lp + i, 8);
+    MEMCPY(&rw, rp + i, 8);
+    const uint64_t diff = lw ^ rw;
+    if (OB_UNLIKELY(0 != diff)) {
+      const int64_t d = i + static_cast<int64_t>(__builtin_ctzll(diff)) / 8;
+      if (OB_UNLIKELY(lp[d] >= 0x80) || OB_UNLIKELY(rp[d] >= 0x80)) {
+        return false;
+      }
+      cmp_ret = lp[d] < rp[d] ? -1 : 1;
+      return true;
+    }
+  }
+  for (; i < len; ++i) {
     if (OB_UNLIKELY(lp[i] >= 0x80) || OB_UNLIKELY(rp[i] >= 0x80)) {
       return false;
     }
+    if (lp[i] != rp[i]) {
+      cmp_ret = lp[i] < rp[i] ? -1 : 1;
+      return true;
+    }
   }
-  const int cmp = MEMCMP(lp, rp, l.len_);
-  cmp_ret = cmp > 0 ? 1 : (cmp < 0 ? -1 : 0);
+  cmp_ret = 0;
   return true;
+}
+
+// Dispatch helper for equal-length, non-null string datums: decides the result
+// with the ASCII fast paths above when the collation family allows it (general
+// ci folds letters; utf8mb4_bin / binary compare raw bytes). Returns false when
+// the real collation has to decide (non-ASCII input or other collation).
+inline bool ob_ascii_cmp_dispatch(
+    const ObDatum &l, const ObDatum &r, const ObCollationType cs, int &cmp_ret)
+{
+  if (CS_TYPE_UTF8MB4_GENERAL_CI == cs) {
+    return ob_ascii_ci_cmp(l, r, cmp_ret);
+  } else if (CS_TYPE_UTF8MB4_BIN == cs || CS_TYPE_BINARY == cs) {
+    return ob_ascii_bin_cmp(l, r, cmp_ret);
+  }
+  return false;
 }
 
 template <ObCollationType CS_TYPE, bool WITH_END_SPACE>
